@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ABS Diet Tracker</title>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+
+    <header>
+        <h1>🧪 ABS Diet Tracker</h1>
+        <p class="subtitle">Auto-Brewery Syndrome — Diet & BAC Correlation Analysis</p>
+    </header>
+
+    <main>
+        <!-- Upload Section -->
+        <section id="upload-section" class="card">
+            <h2>Upload Excel Log</h2>
+            <div id="drop-zone" class="drop-zone">
+                <p>Drag & drop your <strong>.xlsx</strong> file here, or click to select</p>
+                <input type="file" id="file-input" accept=".xlsx,.xls" hidden>
+            </div>
+            <div id="upload-status" class="status"></div>
+        </section>
+
+        <!-- Controls -->
+        <section id="controls-section" class="card hidden">
+            <h2>Analysis Parameters</h2>
+            <div class="controls-row">
+                <div class="control-group">
+                    <label for="hours-slider">Look-back window: <strong id="hours-value">3</strong>h</label>
+                    <input type="range" id="hours-slider" min="1" max="8" step="0.5" value="3">
+                </div>
+                <div class="control-group">
+                    <label for="minobs-slider">Min observations: <strong id="minobs-value">3</strong></label>
+                    <input type="range" id="minobs-slider" min="1" max="10" step="1" value="3">
+                </div>
+                <button id="recompute-btn" class="btn">Recompute</button>
+            </div>
+        </section>
+
+        <!-- Summary Cards -->
+        <section id="summary-section" class="hidden">
+            <div class="cards-row">
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-readings">—</div>
+                    <div class="stat-label">BAC Readings</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-ingredients">—</div>
+                    <div class="stat-label">Unique Ingredients</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-episodes">—</div>
+                    <div class="stat-label">Episodes</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-bac-mean">—</div>
+                    <div class="stat-label">Mean BAC (‰)</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-pairs">—</div>
+                    <div class="stat-label">Lookback Pairs</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-daterange">—</div>
+                    <div class="stat-label">Date Range</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- BAC Timeline Chart -->
+        <section id="timeline-section" class="card hidden">
+            <h2>BAC Timeline</h2>
+            <div id="bac-timeline-chart"></div>
+        </section>
+
+        <!-- Lift Scores Chart -->
+        <section id="lift-section" class="card hidden">
+            <h2>Lift Scores — Overall</h2>
+            <div class="lift-controls">
+                <label for="period-select">Period:</label>
+                <select id="period-select">
+                    <option value="overall">Overall</option>
+                </select>
+                <label><input type="checkbox" id="show-low-conf" checked> Show low confidence</label>
+            </div>
+            <div id="lift-chart"></div>
+        </section>
+
+        <!-- Episode Log Table -->
+        <section id="episodes-section" class="card hidden">
+            <h2>Episode Log</h2>
+            <table id="episodes-table">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Time</th>
+                        <th>BAC (‰)</th>
+                        <th>Medications</th>
+                        <th>Comment</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </section>
+    </main>
+
+    <footer>
+        <p>ABS Tracker v0.1 — For research and personal health tracking only. Not medical advice.</p>
+    </footer>
+
+    <script src="/static/app.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,238 @@
+"""
+Excel log parser — reads the ABS diet log into clean DataFrames.
+"""
+
+import datetime
+import warnings
+from pathlib import Path
+
+import pandas as pd
+
+warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
+
+# ---------------------------------------------------------------------------
+# Column indices (0-based) — matches jo_log.xlsx
+# ---------------------------------------------------------------------------
+C_DATE = 0
+C_MEAL = 1
+C_MEAL_TIME = 2
+C_PRODUCT = 3
+C_MEASURE = 4
+C_GRAMS = 5
+C_CALORIES = 6
+C_PROTEIN = 7
+C_FAT = 8
+C_SAT_FAT = 9
+C_CARBS = 10
+C_SUGARS = 11
+C_FIBRE = 12
+C_BAC_TIME = 13
+C_BAC_VAL = 14
+C_EPISODE = 15
+C_MEDICATION = 16
+C_COMMENT = 17
+
+MEAL_LABELS = {"Breakfast", "Snack", "Lunch", "Dinner"}
+HEADER_STRINGS = {"Date", "Meal", "Espisode", "Episode"}
+
+# Known medication keywords (lowercase) → canonical name
+MEDICATION_KEYWORDS = {
+    "rifaximin": "Rifaximin",
+    "activated charcoal": "Activated Charcoal",
+    "activated charcol": "Activated Charcoal",
+    "charcol": "Activated Charcoal",
+    "charcoal": "Activated Charcoal",
+}
+
+
+# ---------------------------------------------------------------------------
+# parse_medication_events
+# ---------------------------------------------------------------------------
+def parse_medication_events(raw: pd.DataFrame) -> list[dict]:
+    """
+    Scan date rows for medication entries and return a list of events:
+        [{"date": date, "medication": str, "action": "start"|"stop"}, ...]
+    Multiple medications on one row (comma-separated) are split into separate events.
+    """
+    events = []
+    date_rows = raw[raw[C_DATE].apply(lambda v: isinstance(v, datetime.datetime))]
+
+    for _, row in date_rows.iterrows():
+        med_raw = row[C_MEDICATION]
+        if pd.isna(med_raw):
+            continue
+        date = row[C_DATE].date()
+        for part in str(med_raw).split(","):
+            part = part.strip().lower()
+            action = None
+            if "start" in part:
+                action = "start"
+            elif "stop" in part:
+                action = "stop"
+            else:
+                continue
+
+            med_name = None
+            for keyword, canonical in MEDICATION_KEYWORDS.items():
+                if keyword in part:
+                    med_name = canonical
+                    break
+
+            if med_name and action:
+                events.append({"date": date, "medication": med_name, "action": action})
+
+    return sorted(events, key=lambda e: e["date"])
+
+
+# ---------------------------------------------------------------------------
+# build_medication_periods
+# ---------------------------------------------------------------------------
+def build_medication_periods(events: list[dict]) -> dict[str, list[dict]]:
+    """
+    Convert start/stop events into date ranges per medication.
+    Returns: {medication_name: [{"start": date, "stop": date|None}, ...]}
+    """
+    periods: dict[str, list[dict]] = {}
+    open_starts: dict[str, datetime.date] = {}
+
+    for event in events:
+        med = event["medication"]
+        date = event["date"]
+
+        if event["action"] == "start":
+            open_starts[med] = date
+
+        elif event["action"] == "stop":
+            if med in open_starts:
+                periods.setdefault(med, []).append(
+                    {
+                        "start": open_starts.pop(med),
+                        "stop": date,
+                    }
+                )
+
+    # Any medication still open at end of data → stop=None (ongoing)
+    for med, start in open_starts.items():
+        periods.setdefault(med, []).append({"start": start, "stop": None})
+
+    return periods
+
+
+# ---------------------------------------------------------------------------
+# get_active_medications
+# ---------------------------------------------------------------------------
+def get_active_medications(
+    date: datetime.date,
+    periods: dict[str, list[dict]],
+) -> list[str]:
+    """Return list of medications active on a given date."""
+    active = []
+    for med, ranges in periods.items():
+        for r in ranges:
+            stop = r["stop"] or datetime.date(9999, 12, 31)
+            if r["start"] <= date <= stop:
+                active.append(med)
+                break
+    return sorted(active)
+
+
+# ---------------------------------------------------------------------------
+# parse_log
+# ---------------------------------------------------------------------------
+def parse_log(path: str | Path) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """
+    Parse the Excel log into two clean DataFrames plus medication periods.
+
+    Returns
+    -------
+    meals_df    : one row per ingredient
+    bac_df      : one row per BAC reading, with active_medications column
+    med_periods : {medication: [{start, stop}, ...]}
+    """
+    raw = pd.read_excel(path, sheet_name=0, header=None)
+    raw = raw[~raw[C_DATE].astype(str).isin(HEADER_STRINGS)].reset_index(drop=True)
+
+    # Build medication periods first
+    events = parse_medication_events(raw)
+    med_periods = build_medication_periods(events)
+
+    meals_rows = []
+    bac_rows = []
+
+    current_date = None
+    current_meal = None
+    current_meal_time = None
+    current_meal_dt = None
+
+    for _, row in raw.iterrows():
+        has_date = pd.notna(row[C_DATE]) and isinstance(row[C_DATE], datetime.datetime)
+        has_meal = pd.notna(row[C_MEAL]) and str(row[C_MEAL]) in MEAL_LABELS
+        has_product = pd.notna(row[C_PRODUCT])
+        has_bac = pd.notna(row[C_BAC_VAL])
+
+        if has_date:
+            current_date = row[C_DATE].date()
+            current_meal = None
+            current_meal_time = None
+            current_meal_dt = None
+
+        if has_meal and current_date is not None:
+            current_meal = str(row[C_MEAL])
+            raw_time = row[C_MEAL_TIME]
+            if isinstance(raw_time, datetime.time):
+                current_meal_time = raw_time
+                current_meal_dt = datetime.datetime.combine(current_date, raw_time)
+            else:
+                current_meal_time = None
+                current_meal_dt = None
+
+        if has_bac and current_date is not None:
+            bac_time = row[C_BAC_TIME]
+            bac_dt = (
+                datetime.datetime.combine(current_date, bac_time)
+                if isinstance(bac_time, datetime.time)
+                else None
+            )
+            episode_raw = row[C_EPISODE]
+            is_episode = (
+                pd.notna(episode_raw) and str(episode_raw).strip().lower() == "yes"
+            )
+            active_meds = get_active_medications(current_date, med_periods)
+            bac_rows.append(
+                {
+                    "date": current_date,
+                    "bac_time": bac_time,
+                    "bac_datetime": bac_dt,
+                    "promille": float(row[C_BAC_VAL]),
+                    "episode": is_episode,
+                    "active_medications": (
+                        ", ".join(active_meds) if active_meds else "none"
+                    ),
+                    "comment": row[C_COMMENT] if pd.notna(row[C_COMMENT]) else None,
+                }
+            )
+
+        if has_product and not has_date and not has_meal and current_date is not None:
+            grams = row[C_GRAMS] if pd.notna(row[C_GRAMS]) else None
+            meals_rows.append(
+                {
+                    "date": current_date,
+                    "meal": current_meal,
+                    "meal_time": current_meal_time,
+                    "meal_datetime": current_meal_dt,
+                    "ingredient": str(row[C_PRODUCT]).strip(),
+                    "quantity_g": float(grams) if grams is not None else None,
+                }
+            )
+
+    meals_df = pd.DataFrame(meals_rows)
+    bac_df = pd.DataFrame(bac_rows)
+
+    if not meals_df.empty:
+        meals_df["date"] = pd.to_datetime(meals_df["date"])
+    if not bac_df.empty:
+        bac_df["date"] = pd.to_datetime(bac_df["date"])
+        bac_df["bac_datetime"] = pd.to_datetime(bac_df["bac_datetime"])
+        bac_df = bac_df.sort_values("bac_datetime").reset_index(drop=True)
+
+    return meals_df, bac_df, med_periods
