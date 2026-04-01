@@ -139,9 +139,19 @@ def get_active_medications(
 # ---------------------------------------------------------------------------
 # parse_log
 # ---------------------------------------------------------------------------
-def parse_log(path: str | Path) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+def parse_log(
+    path: str | Path,
+    *,
+    split_compounds: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """
     Parse the Excel log into two clean DataFrames plus medication periods.
+
+    Parameters
+    ----------
+    path             : path to the .xlsx log file
+    split_compounds  : if True, split ingredient names containing "&" into
+                       separate rows (e.g. "A & B soup" → "A", "B")
 
     Returns
     -------
@@ -214,16 +224,38 @@ def parse_log(path: str | Path) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
 
         if has_product and not has_date and not has_meal and current_date is not None:
             grams = row[C_GRAMS] if pd.notna(row[C_GRAMS]) else None
-            meals_rows.append(
-                {
-                    "date": current_date,
-                    "meal": current_meal,
-                    "meal_time": current_meal_time,
-                    "meal_datetime": current_meal_dt,
-                    "ingredient": str(row[C_PRODUCT]).strip(),
-                    "quantity_g": float(grams) if grams is not None else None,
-                }
-            )
+            raw_name = str(row[C_PRODUCT]).strip()
+
+            # Split compound ingredients on "&" (e.g. "Zuccini & Chicken & Spinach soup")
+            # The trailing word after the last ingredient (e.g. "soup") is stripped from each part
+            if split_compounds and "&" in raw_name:
+                parts = [p.strip() for p in raw_name.split("&")]
+                # Check if the last part ends with a shared suffix like "soup"
+                last_part = parts[-1]
+                suffix = ""
+                last_words = last_part.rsplit(None, 1)
+                if len(last_words) == 2:
+                    suffix = last_words[1].lower()
+                    # Only treat as suffix if it's a known dish type
+                    if suffix in ("soup", "stew", "salad", "bowl", "mix"):
+                        parts[-1] = last_words[0]  # remove suffix from last part
+                    else:
+                        suffix = ""
+                ingredient_names = [p.strip().title() for p in parts if p.strip()]
+            else:
+                ingredient_names = [raw_name]
+
+            for ingredient in ingredient_names:
+                meals_rows.append(
+                    {
+                        "date": current_date,
+                        "meal": current_meal,
+                        "meal_time": current_meal_time,
+                        "meal_datetime": current_meal_dt,
+                        "ingredient": ingredient,
+                        "quantity_g": float(grams) if grams is not None else None,
+                    }
+                )
 
     meals_df = pd.DataFrame(meals_rows)
     bac_df = pd.DataFrame(bac_rows)

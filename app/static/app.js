@@ -18,6 +18,7 @@ const minobsValue = document.getElementById("minobs-value");
 const recomputeBtn = document.getElementById("recompute-btn");
 const periodSelect = document.getElementById("period-select");
 const showLowConf = document.getElementById("show-low-conf");
+const splitCompounds = document.getElementById("split-compounds");
 
 let currentData = null;
 
@@ -49,9 +50,10 @@ async function uploadFile(file) {
 
     const hours = hoursSlider.value;
     const minObs = minobsSlider.value;
+    const split = splitCompounds.checked;
 
     try {
-        const resp = await fetch(`/upload?hours=${hours}&min_obs=${minObs}`, {
+        const resp = await fetch(`/upload?hours=${hours}&min_obs=${minObs}&split_compounds=${split}`, {
             method: "POST",
             body: formData,
         });
@@ -90,6 +92,7 @@ recomputeBtn.addEventListener("click", async () => {
             body: JSON.stringify({
                 hours: parseFloat(hoursSlider.value),
                 min_obs: parseInt(minobsSlider.value),
+                split_compounds: splitCompounds.checked,
             }),
         });
         if (!resp.ok) throw new Error("Recompute failed");
@@ -122,6 +125,7 @@ function renderAll() {
     hoursValue.textContent = currentData.hours;
     minobsSlider.value = currentData.min_obs;
     minobsValue.textContent = currentData.min_obs;
+    splitCompounds.checked = currentData.split_compounds !== false;
 
     renderSummary();
     renderTimeline();
@@ -204,17 +208,23 @@ function renderTimeline() {
         }
     }
 
-    // Medication legend annotations
+    // Medication legend annotations — stagger vertically to avoid overlap
     const annotations = [];
-    for (const [med, ranges] of Object.entries(medPeriods)) {
+    const medNames = Object.keys(medPeriods);
+    for (let mi = 0; mi < medNames.length; mi++) {
+        const med = medNames[mi];
+        const ranges = medPeriods[med];
+        // Short label to save space
+        const shortLabel = med.replace("Activated Charcoal", "A. Charcoal");
         for (const range of ranges) {
+            const yOffset = 1.02 + mi * 0.05; // stagger each medication up
             annotations.push({
                 x: range.start,
-                y: 1,
+                y: yOffset,
                 xref: "x", yref: "paper",
-                text: med,
+                text: `<b>${shortLabel}</b>`,
                 showarrow: false,
-                font: { size: 10, color: "#8b8fa3" },
+                font: { size: 10, color: borderColors[med] || "#8b8fa3" },
                 xanchor: "left",
                 yanchor: "bottom",
             });
@@ -225,7 +235,7 @@ function renderTimeline() {
         paper_bgcolor: "#1a1d27",
         plot_bgcolor: "#1a1d27",
         font: { color: "#e1e4eb" },
-        margin: { l: 50, r: 20, t: 20, b: 50 },
+        margin: { l: 50, r: 20, t: 40, b: 50 },
         xaxis: {
             gridcolor: "#2a2d3a",
             title: "Date",
