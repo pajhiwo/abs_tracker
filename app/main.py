@@ -114,9 +114,10 @@ def _build_results_json() -> dict:
     # BAC readings
     bac_records = []
     if bac_df is not None and not bac_df.empty:
-        for _, row in bac_df.iterrows():
+        for idx, row in bac_df.iterrows():
             bac_records.append(
                 {
+                    "bac_idx": int(idx),
                     "date": _serialize_date(row["date"]),
                     "bac_time": _serialize_date(row.get("bac_time")),
                     "bac_datetime": _serialize_date(row["bac_datetime"]),
@@ -172,6 +173,20 @@ def _build_results_json() -> dict:
             ),
         }
 
+    # Lookback ingredients grouped by BAC reading index
+    lookback_by_reading = {}
+    if session.lookback_df is not None and not session.lookback_df.empty:
+        for _, lrow in session.lookback_df.iterrows():
+            bac_idx = int(lrow["bac_idx"])
+            lookback_by_reading.setdefault(bac_idx, []).append(
+                {
+                    "ingredient": lrow["ingredient"],
+                    "meal": lrow["meal"],
+                    "hours_before": lrow["hours_before"],
+                    "approximate": bool(lrow["approximate"]),
+                }
+            )
+
     return {
         "filename": session.filename,
         "hours": session.hours,
@@ -182,6 +197,7 @@ def _build_results_json() -> dict:
         "medication_periods": med_periods_out,
         "lift_scores_overall": scores_all,
         "lift_scores_by_period": scores_by_period,
+        "lookback_by_reading": lookback_by_reading,
     }
 
 

@@ -233,6 +233,76 @@ tr:hover td {
     background: rgba(99, 102, 241, 0.05);
 }
 
+/* Episode filter input */
+.episode-filter {
+    width: 100%;
+    padding: 0.6rem 1rem;
+    margin-bottom: 1rem;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.9rem;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.episode-filter:focus {
+    border-color: var(--accent);
+}
+
+.episode-filter::placeholder {
+    color: var(--text-dim);
+}
+
+/* Episode row highlight */
+tr.episode-row td {
+    background: rgba(239, 68, 68, 0.06);
+}
+
+tr.episode-row:hover td {
+    background: rgba(239, 68, 68, 0.12);
+}
+
+/* BAC cell with inline bar */
+.bac-cell {
+    position: relative;
+    min-width: 80px;
+}
+
+.bac-bar {
+    height: 3px;
+    border-radius: 2px;
+    margin-top: 3px;
+    opacity: 0.6;
+    min-width: 2px;
+}
+
+/* Ingredient pills */
+.ing-cell {
+    max-width: 300px;
+}
+
+.ing-pill {
+    display: inline-block;
+    font-size: 0.82rem;
+    padding: 1px 6px;
+    margin: 1px 2px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.04);
+    white-space: nowrap;
+}
+
+.ing-pill small {
+    opacity: 0.6;
+    font-size: 0.75rem;
+    margin-left: 2px;
+}
+
+.ing-none {
+    color: var(--text-dim);
+}
+
 footer {
     text-align: center;
     padding: 2rem 1rem;

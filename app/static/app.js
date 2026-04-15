@@ -340,28 +340,106 @@ function renderLiftChart() {
 // ---------------------------------------------------------------------------
 // Episode table
 // ---------------------------------------------------------------------------
+
+// Build a quick lift lookup from the overall scores
+function _buildLiftMap() {
+    const map = {};
+    if (currentData && currentData.lift_scores_overall) {
+        for (const s of currentData.lift_scores_overall) {
+            map[s.ingredient] = s;
+        }
+    }
+    return map;
+}
+
+function _ingredientColor(score) {
+    if (!score) return "#8b8fa3";           // unknown → grey
+    if (score.low_confidence) return "#f59e0b"; // low confidence → amber
+    if (score.lift != null && score.lift > 1) return "#ef4444"; // suspect → red
+    return "#22c55e";                         // safe → green
+}
+
 function renderEpisodeTable() {
     const tbody = document.querySelector("#episodes-table tbody");
     tbody.innerHTML = "";
 
-    const episodes = currentData.bac_readings.filter(r => r.episode);
+    const readings = currentData.bac_readings
+        .filter(r => r.promille > 0)
+        .sort((a, b) => (b.bac_datetime || "").localeCompare(a.bac_datetime || ""));
+    const lookback = currentData.lookback_by_reading || {};
+    const liftMap = _buildLiftMap();
 
-    if (episodes.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8b8fa3">No episodes recorded</td></tr>';
+    // Find max BAC for proportional bars
+    const maxBac = Math.max(...readings.map(r => r.promille), 0.01);
+
+    if (readings.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#8b8fa3">No readings loaded</td></tr>';
         return;
     }
 
-    for (const ep of episodes) {
+    for (const r of readings) {
         const tr = document.createElement("tr");
-        const date = ep.bac_datetime ? ep.bac_datetime.slice(0, 10) : ep.date || "—";
-        const time = ep.bac_time || "—";
+        if (r.episode) tr.classList.add("episode-row");
+
+        const date = r.bac_datetime ? r.bac_datetime.slice(0, 10) : r.date || "—";
+        const time = r.bac_time || "—";
+        const bacPct = Math.round((r.promille / maxBac) * 100);
+        const bacColor = r.episode ? "#ef4444" : "#6366f1";
+
+        // Ingredients in window
+        const ingredients = lookback[String(r.bac_idx)] || [];
+        // Deduplicate (same ingredient can appear from multiple meals)
+        const seen = new Set();
+        const unique = [];
+        for (const ing of ingredients) {
+            const key = ing.ingredient;
+            if (!seen.has(key)) {
+                seen.add(key);
+                unique.push(ing);
+            }
+        }
+        // Sort by hours_before ascending (most recent meal first)
+        unique.sort((a, b) => (a.hours_before || 99) - (b.hours_before || 99));
+
+        let ingredientHtml = "";
+        if (unique.length === 0) {
+            ingredientHtml = '<span class="ing-none">—</span>';
+        } else {
+            ingredientHtml = unique.map(ing => {
+                const score = liftMap[ing.ingredient];
+                const color = _ingredientColor(score);
+                const hrs = ing.hours_before != null ? `${ing.hours_before}h` : "≈";
+                const approx = ing.approximate ? " ~" : "";
+                return `<span class="ing-pill" style="color:${color}">${ing.ingredient} <small>${hrs}${approx}</small></span>`;
+            }).join("");
+        }
+
         tr.innerHTML = `
             <td>${date}</td>
             <td>${time}</td>
-            <td><strong style="color:#ef4444">${ep.promille}‰</strong></td>
-            <td>${ep.active_medications}</td>
-            <td>${ep.comment || "—"}</td>
+            <td>
+                <div class="bac-cell">
+                    <strong style="color:${bacColor}">${r.promille}‰</strong>
+                    <div class="bac-bar" style="width:${bacPct}%;background:${bacColor}"></div>
+                </div>
+            </td>
+            <td>${r.active_medications}</td>
+            <td class="ing-cell">${ingredientHtml}</td>
+            <td>${r.comment || "—"}</td>
         `;
         tbody.appendChild(tr);
     }
+
+    // Wire up filter (re-attach to avoid duplicates)
+    const filterInput = document.getElementById("episode-filter");
+    filterInput.oninput = () => {
+        const q = filterInput.value.toLowerCase();
+        const rows = tbody.querySelectorAll("tr");
+        for (const row of rows) {
+            const text = row.textContent.toLowerCase();
+            row.style.display = text.includes(q) ? "" : "none";
+        }
+    };
+    // Reset filter on new render
+    filterInput.value = "";
 }

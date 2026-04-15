@@ -99,6 +99,8 @@
         <!-- Episode Log Table -->
         <section id="episodes-section" class="card hidden">
             <h2>Episode Log</h2>
+            <input type="text" id="episode-filter" class="episode-filter"
+                placeholder="🔍 Filter by ingredient, date, medication…">
             <table id="episodes-table">
                 <thead>
                     <tr>
@@ -106,6 +108,7 @@
                         <th>Time</th>
                         <th>BAC (‰)</th>
                         <th>Medications</th>
+                        <th>Ingredients (in time window)</th>
                         <th>Comment</th>
                     </tr>
                 </thead>
