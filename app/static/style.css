@@ -229,6 +229,21 @@ th {
     letter-spacing: 0.05em;
 }
 
+th.sortable {
+    cursor: pointer;
+    user-select: none;
+}
+
+th.sortable:hover {
+    color: var(--accent);
+}
+
+.sort-arrow {
+    font-size: 0.7rem;
+    margin-left: 3px;
+    opacity: 0.7;
+}
+
 tr:hover td {
     background: rgba(99, 102, 241, 0.05);
 }

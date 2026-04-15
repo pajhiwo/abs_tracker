@@ -341,6 +341,9 @@ function renderLiftChart() {
 // Episode table
 // ---------------------------------------------------------------------------
 
+// Sort state for episode table
+let episodeSort = { column: "date", direction: "desc" };
+
 // Build a quick lift lookup from the overall scores
 function _buildLiftMap() {
     const map = {};
@@ -359,13 +362,34 @@ function _ingredientColor(score) {
     return "#22c55e";                         // safe → green
 }
 
+function _sortReadings(readings) {
+    const dir = episodeSort.direction === "desc" ? -1 : 1;
+    if (episodeSort.column === "date") {
+        return readings.sort((a, b) => dir * (a.bac_datetime || "").localeCompare(b.bac_datetime || ""));
+    } else if (episodeSort.column === "bac") {
+        return readings.sort((a, b) => dir * (a.promille - b.promille));
+    }
+    return readings;
+}
+
+function _updateSortArrows() {
+    document.querySelectorAll("#episodes-table th.sortable").forEach(th => {
+        const arrow = th.querySelector(".sort-arrow");
+        if (th.dataset.sort === episodeSort.column) {
+            arrow.textContent = episodeSort.direction === "desc" ? "▼" : "▲";
+        } else {
+            arrow.textContent = "";
+        }
+    });
+}
+
 function renderEpisodeTable() {
     const tbody = document.querySelector("#episodes-table tbody");
     tbody.innerHTML = "";
 
-    const readings = currentData.bac_readings
-        .filter(r => r.promille > 0)
-        .sort((a, b) => (b.bac_datetime || "").localeCompare(a.bac_datetime || ""));
+    const readings = _sortReadings(
+        currentData.bac_readings.filter(r => r.promille > 0)
+    );
     const lookback = currentData.lookback_by_reading || {};
     const liftMap = _buildLiftMap();
 
@@ -440,6 +464,20 @@ function renderEpisodeTable() {
             row.style.display = text.includes(q) ? "" : "none";
         }
     };
-    // Reset filter on new render
-    filterInput.value = "";
+
+    // Wire up sortable column headers
+    document.querySelectorAll("#episodes-table th.sortable").forEach(th => {
+        th.onclick = () => {
+            const col = th.dataset.sort;
+            if (episodeSort.column === col) {
+                episodeSort.direction = episodeSort.direction === "desc" ? "asc" : "desc";
+            } else {
+                episodeSort.column = col;
+                episodeSort.direction = "desc";
+            }
+            renderEpisodeTable();
+        };
+    });
+
+    _updateSortArrows();
 }
