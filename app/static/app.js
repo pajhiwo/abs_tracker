@@ -377,8 +377,10 @@ function _updateSortArrows() {
         const arrow = th.querySelector(".sort-arrow");
         if (th.dataset.sort === episodeSort.column) {
             arrow.textContent = episodeSort.direction === "desc" ? "▼" : "▲";
+            th.setAttribute("aria-sort", episodeSort.direction === "desc" ? "descending" : "ascending");
         } else {
             arrow.textContent = "";
+            th.setAttribute("aria-sort", "none");
         }
     });
 }
@@ -425,38 +427,69 @@ function renderEpisodeTable() {
         // Sort by hours_before ascending (most recent meal first)
         unique.sort((a, b) => (a.hours_before || 99) - (b.hours_before || 99));
 
-        let ingredientHtml = "";
+        // Build cells using DOM APIs to prevent HTML/script injection
+        const tdDate = document.createElement("td");
+        tdDate.textContent = date;
+
+        const tdTime = document.createElement("td");
+        tdTime.textContent = time;
+
+        const tdBac = document.createElement("td");
+        const bacCell = document.createElement("div");
+        bacCell.className = "bac-cell";
+        const bacStrong = document.createElement("strong");
+        bacStrong.style.color = bacColor;
+        bacStrong.textContent = `${r.promille}‰`;
+        const bacBar = document.createElement("div");
+        bacBar.className = "bac-bar";
+        bacBar.style.width = `${bacPct}%`;
+        bacBar.style.background = bacColor;
+        bacCell.appendChild(bacStrong);
+        bacCell.appendChild(bacBar);
+        tdBac.appendChild(bacCell);
+
+        const tdMeds = document.createElement("td");
+        tdMeds.textContent = r.active_medications || "—";
+
+        const tdIng = document.createElement("td");
+        tdIng.className = "ing-cell";
         if (unique.length === 0) {
-            ingredientHtml = '<span class="ing-none">—</span>';
+            const none = document.createElement("span");
+            none.className = "ing-none";
+            none.textContent = "—";
+            tdIng.appendChild(none);
         } else {
-            ingredientHtml = unique.map(ing => {
+            for (const ing of unique) {
                 const score = liftMap[ing.ingredient];
                 const color = _ingredientColor(score);
                 const hrs = ing.hours_before != null ? `${ing.hours_before}h` : "≈";
                 const approx = ing.approximate ? " ~" : "";
-                return `<span class="ing-pill" style="color:${color}">${ing.ingredient} <small>${hrs}${approx}</small></span>`;
-            }).join("");
+                const pill = document.createElement("span");
+                pill.className = "ing-pill";
+                pill.style.color = color;
+                pill.textContent = `${ing.ingredient} `;
+                const small = document.createElement("small");
+                small.textContent = `${hrs}${approx}`;
+                pill.appendChild(small);
+                tdIng.appendChild(pill);
+            }
         }
 
-        tr.innerHTML = `
-            <td>${date}</td>
-            <td>${time}</td>
-            <td>
-                <div class="bac-cell">
-                    <strong style="color:${bacColor}">${r.promille}‰</strong>
-                    <div class="bac-bar" style="width:${bacPct}%;background:${bacColor}"></div>
-                </div>
-            </td>
-            <td>${r.active_medications}</td>
-            <td class="ing-cell">${ingredientHtml}</td>
-            <td>${r.comment || "—"}</td>
-        `;
+        const tdComment = document.createElement("td");
+        tdComment.textContent = r.comment || "—";
+
+        tr.appendChild(tdDate);
+        tr.appendChild(tdTime);
+        tr.appendChild(tdBac);
+        tr.appendChild(tdMeds);
+        tr.appendChild(tdIng);
+        tr.appendChild(tdComment);
         tbody.appendChild(tr);
     }
 
     // Wire up filter (re-attach to avoid duplicates)
     const filterInput = document.getElementById("episode-filter");
-    filterInput.oninput = () => {
+    const applyFilter = () => {
         const q = filterInput.value.toLowerCase();
         const rows = tbody.querySelectorAll("tr");
         for (const row of rows) {
@@ -464,10 +497,15 @@ function renderEpisodeTable() {
             row.style.display = text.includes(q) ? "" : "none";
         }
     };
+    filterInput.oninput = applyFilter;
+    // Re-apply current filter after sort/re-render
+    applyFilter();
 
     // Wire up sortable column headers
     document.querySelectorAll("#episodes-table th.sortable").forEach(th => {
-        th.onclick = () => {
+        const btn = th.querySelector("button");
+        if (!btn) return;
+        btn.onclick = () => {
             const col = th.dataset.sort;
             if (episodeSort.column === col) {
                 episodeSort.direction = episodeSort.direction === "desc" ? "asc" : "desc";
