@@ -25,7 +25,7 @@ from core.parser import (
     C_COMMENT,
     MEAL_LABELS,
     HEADER_STRINGS,
-    MEDICATION_KEYWORDS,
+    MEDICATION_ALIASES,
 )
 from core.analysis import map_lookback, compute_lift_scores
 

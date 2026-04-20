@@ -25,6 +25,19 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 # ---------------------------------------------------------------------------
 # In-memory session store (single-user for now)
 # ---------------------------------------------------------------------------
+# Protein/meat keywords — these ingredients are very low in fermentable
+# carbohydrates and unlikely to trigger ABS episodes.
+PROTEIN_KEYWORDS = {
+    "chicken", "beef", "pork", "lamb", "turkey", "duck", "veal", "venison",
+    "bison", "rabbit", "goat", "ham", "bacon", "sausage",
+    "salmon", "tuna", "cod", "trout", "shrimp", "prawn", "crab", "lobster",
+    "mackerel", "sardine", "herring", "tilapia", "halibut", "bass", "perch",
+    "catfish", "anchovy", "squid", "octopus", "mussel", "clam", "oyster",
+    "scallop", "fish",
+    "egg", "eggs",
+}
+
+
 class SessionData:
     meals_df = None
     bac_df = None
@@ -35,6 +48,7 @@ class SessionData:
     hours = 3.0
     min_obs = 3
     split_compounds = True
+    exclude_proteins = False
     filename = None
     raw_bytes = None  # keep uploaded file for re-parse on toggle
 
@@ -46,6 +60,7 @@ class AnalysisParams(BaseModel):
     hours: float = 3.0
     min_obs: int = 3
     split_compounds: bool = True
+    exclude_proteins: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +77,8 @@ def _serialize_date(val):
     return str(val)
 
 
-def _run_analysis(hours: float, min_obs: int, split_compounds: bool = True):
+def _run_analysis(hours: float, min_obs: int, split_compounds: bool = True,
+                   exclude_proteins: bool = False):
     """Run lookback + lift scores on current session data.
 
     If split_compounds changed, re-parse from raw_bytes first.
@@ -87,7 +103,14 @@ def _run_analysis(hours: float, min_obs: int, split_compounds: bool = True):
 
     session.hours = hours
     session.min_obs = min_obs
-    session.lookback_df = map_lookback(session.bac_df, session.meals_df, hours=hours)
+    session.exclude_proteins = exclude_proteins
+    lookback = map_lookback(session.bac_df, session.meals_df, hours=hours)
+    if exclude_proteins:
+        mask = lookback["ingredient"].str.lower().apply(
+            lambda x: not any(kw in x for kw in PROTEIN_KEYWORDS)
+        )
+        lookback = lookback[mask]
+    session.lookback_df = lookback
     session.scores_all = compute_lift_scores(
         session.bac_df, session.lookback_df, min_observations=min_obs
     )
@@ -267,5 +290,6 @@ async def recompute(params: AnalysisParams):
     """Recompute analysis with new parameters (without re-uploading)."""
     if session.bac_df is None:
         raise HTTPException(404, "No data loaded — upload a file first")
-    _run_analysis(params.hours, params.min_obs, params.split_compounds)
+    _run_analysis(params.hours, params.min_obs, params.split_compounds,
+                   params.exclude_proteins)
     return _build_results_json()

@@ -43,6 +43,10 @@
                     <label><input type="checkbox" id="split-compounds" checked> Split compound ingredients
                         (&amp;)</label>
                 </div>
+                <div class="control-group">
+                    <label><input type="checkbox" id="exclude-proteins"> Exclude proteins
+                        (meat, fish, eggs)</label>
+                </div>
                 <button id="recompute-btn" class="btn">Recompute</button>
             </div>
         </section>
@@ -92,6 +96,7 @@
                     <option value="overall">Overall</option>
                 </select>
                 <label><input type="checkbox" id="show-low-conf" checked> Show low confidence</label>
+                <label><input type="checkbox" id="hide-proteins"> Hide proteins (meat, fish, eggs)</label>
             </div>
             <div id="lift-chart"></div>
         </section>

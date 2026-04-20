@@ -18,7 +18,9 @@ const minobsValue = document.getElementById("minobs-value");
 const recomputeBtn = document.getElementById("recompute-btn");
 const periodSelect = document.getElementById("period-select");
 const showLowConf = document.getElementById("show-low-conf");
+const hideProteins = document.getElementById("hide-proteins");
 const splitCompounds = document.getElementById("split-compounds");
+const excludeProteins = document.getElementById("exclude-proteins");
 
 let currentData = null;
 
@@ -93,6 +95,7 @@ recomputeBtn.addEventListener("click", async () => {
                 hours: parseFloat(hoursSlider.value),
                 min_obs: parseInt(minobsSlider.value),
                 split_compounds: splitCompounds.checked,
+                exclude_proteins: excludeProteins.checked,
             }),
         });
         if (!resp.ok) throw new Error("Recompute failed");
@@ -108,6 +111,7 @@ recomputeBtn.addEventListener("click", async () => {
 
 periodSelect.addEventListener("change", renderLiftChart);
 showLowConf.addEventListener("change", renderLiftChart);
+hideProteins.addEventListener("change", renderLiftChart);
 
 // ---------------------------------------------------------------------------
 // Render everything
@@ -279,6 +283,22 @@ function renderLiftChart() {
     const includeLow = showLowConf.checked;
     if (!includeLow) {
         scores = scores.filter(s => !s.low_confidence && !s.always_present);
+    }
+
+    if (hideProteins.checked) {
+        const proteinKeywords = [
+            "chicken", "beef", "pork", "lamb", "turkey", "duck", "veal",
+            "venison", "bison", "rabbit", "goat", "ham", "bacon", "sausage",
+            "salmon", "tuna", "cod", "trout", "shrimp", "prawn", "crab",
+            "lobster", "mackerel", "sardine", "herring", "tilapia", "halibut",
+            "bass", "perch", "catfish", "anchovy", "squid", "octopus",
+            "mussel", "clam", "oyster", "scallop", "fish",
+            "egg", "eggs",
+        ];
+        scores = scores.filter(s => {
+            const name = s.ingredient.toLowerCase();
+            return !proteinKeywords.some(kw => name.includes(kw));
+        });
     }
 
     // Sort by lift ascending (horizontal bars render bottom-up)
