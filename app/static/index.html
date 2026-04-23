@@ -44,7 +44,7 @@
                         (&amp;)</label>
                 </div>
                 <div class="control-group">
-                    <label><input type="checkbox" id="exclude-proteins"> Exclude proteins
+                    <label><input type="checkbox" id="exclude-proteins" checked> Exclude proteins
                         (meat, fish, eggs)</label>
                 </div>
                 <button id="recompute-btn" class="btn">Recompute</button>
@@ -85,6 +85,7 @@
         <section id="timeline-section" class="card hidden">
             <h2>BAC Timeline</h2>
             <div id="bac-timeline-chart"></div>
+            <div id="med-timeline-chart"></div>
         </section>
 
         <!-- Lift Scores Chart -->
@@ -99,6 +100,24 @@
                 <label><input type="checkbox" id="hide-proteins"> Hide proteins (meat, fish, eggs)</label>
             </div>
             <div id="lift-chart"></div>
+        </section>
+
+        <!-- Analysis Report -->
+        <section id="report-section" class="card hidden">
+            <h2>📋 Analysis Report</h2>
+            <button id="generate-report-btn" class="btn">Generate Report</button>
+            <div id="report-content" class="report-content hidden"></div>
+        </section>
+
+        <!-- Meal Planner -->
+        <section id="planner-section" class="card hidden">
+            <h2>🍽️ Meal Planner</h2>
+            <div class="planner-row">
+                <input type="text" id="planner-input" class="planner-input"
+                    placeholder="Enter ingredients (comma-separated): e.g. Rice, Chicken, Broccoli">
+                <button id="check-risk-btn" class="btn">Check Risk</button>
+            </div>
+            <div id="planner-result" class="planner-result hidden"></div>
         </section>
 
         <!-- Episode Log Table -->

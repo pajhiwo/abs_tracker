@@ -340,3 +340,139 @@ footer {
     color: var(--text-dim);
     font-size: 0.8rem;
 }
+
+/* ---------------------------------------------------------------------------
+   Analysis Report
+--------------------------------------------------------------------------- */
+.report-content {
+    margin-top: 1rem;
+}
+
+.report-block {
+    margin-bottom: 1.5rem;
+}
+
+.report-block h3 {
+    font-size: 1rem;
+    margin-bottom: 0.5rem;
+    color: var(--accent);
+}
+
+.report-block p {
+    color: var(--text-secondary);
+    line-height: 1.6;
+}
+
+.report-block ul {
+    padding-left: 1.5rem;
+    color: var(--text-secondary);
+}
+
+.report-block ul li {
+    margin-bottom: 0.3rem;
+}
+
+.report-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.88rem;
+}
+
+.report-table th,
+.report-table td {
+    padding: 6px 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+}
+
+.report-table th {
+    color: var(--text-dim);
+    font-weight: 600;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+}
+
+.summary-table {
+    width: auto;
+}
+
+.summary-label {
+    color: var(--text-dim);
+    font-weight: 600;
+    padding-right: 2rem;
+}
+
+/* ---------------------------------------------------------------------------
+   Meal Planner
+--------------------------------------------------------------------------- */
+.planner-row {
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+}
+
+.planner-input {
+    flex: 1;
+    padding: 0.6rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--text-primary);
+    font-size: 0.95rem;
+}
+
+.planner-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.planner-result {
+    margin-top: 1rem;
+    padding: 1rem;
+    border-radius: var(--radius);
+    background: rgba(99, 102, 241, 0.05);
+}
+
+.risk-badge {
+    display: inline-block;
+    font-size: 1.1rem;
+    font-weight: 700;
+    padding: 0.3rem 1rem;
+    border-radius: var(--radius);
+    margin-bottom: 0.5rem;
+}
+
+.risk-low {
+    background: rgba(34, 197, 94, 0.15);
+    color: #22c55e;
+}
+
+.risk-medium {
+    background: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
+}
+
+.risk-high {
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+}
+
+.risk-unknown {
+    background: rgba(139, 143, 163, 0.15);
+    color: #8b8fa3;
+}
+
+.risk-lift {
+    font-size: 0.9rem;
+    color: var(--text-dim);
+    margin: 0.25rem 0;
+}
+
+.risk-reasoning {
+    color: var(--text-secondary);
+    margin: 0.5rem 0;
+}
+
+.risk-details {
+    margin-top: 0.5rem;
+}

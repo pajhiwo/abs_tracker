@@ -259,6 +259,8 @@ def parse_log(
                 ingredient_names = [raw_name]
 
             for ingredient in ingredient_names:
+                carbs = row[C_CARBS] if pd.notna(row[C_CARBS]) else None
+                sugars = row[C_SUGARS] if pd.notna(row[C_SUGARS]) else None
                 meals_rows.append(
                     {
                         "date": current_date,
@@ -267,6 +269,8 @@ def parse_log(
                         "meal_datetime": current_meal_dt,
                         "ingredient": ingredient,
                         "quantity_g": float(grams) if grams is not None else None,
+                        "carbs_g": float(carbs) if carbs is not None else None,
+                        "sugars_g": float(sugars) if sugars is not None else None,
                     }
                 )
 

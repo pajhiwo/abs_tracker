@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from core import parse_log, map_lookback, compute_lift_scores
+from ai import generate_report, predict_risk, detect_combinations
 
 app = FastAPI(title="ABS Diet Tracker", version="0.1.0")
 
@@ -210,6 +211,20 @@ def _build_results_json() -> dict:
                 }
             )
 
+    # Daily carbs aggregation for timeline chart
+    daily_carbs = []
+    if meals_df is not None and not meals_df.empty and "carbs_g" in meals_df.columns:
+        grouped = meals_df.groupby("date").agg(
+            carbs_g=("carbs_g", "sum"),
+            sugars_g=("sugars_g", "sum"),
+        ).reset_index()
+        for _, row in grouped.iterrows():
+            daily_carbs.append({
+                "date": _serialize_date(row["date"]),
+                "carbs_g": round(float(row["carbs_g"]), 1) if pd.notna(row["carbs_g"]) else 0,
+                "sugars_g": round(float(row["sugars_g"]), 1) if pd.notna(row["sugars_g"]) else 0,
+            })
+
     return {
         "filename": session.filename,
         "hours": session.hours,
@@ -221,6 +236,7 @@ def _build_results_json() -> dict:
         "lift_scores_overall": scores_all,
         "lift_scores_by_period": scores_by_period,
         "lookback_by_reading": lookback_by_reading,
+        "daily_carbs": daily_carbs,
     }
 
 
@@ -240,6 +256,7 @@ async def upload_file(
     hours: float = 3.0,
     min_obs: int = 3,
     split_compounds: bool = True,
+    exclude_proteins: bool = True,
 ):
     """Upload an Excel file, parse it, and run analysis."""
     if not file.filename.endswith((".xlsx", ".xls")):
@@ -273,7 +290,7 @@ async def upload_file(
     session.med_periods = med_periods
     session.filename = file.filename
 
-    _run_analysis(hours, min_obs, split_compounds)
+    _run_analysis(hours, min_obs, split_compounds, exclude_proteins)
     return _build_results_json()
 
 
@@ -293,3 +310,49 @@ async def recompute(params: AnalysisParams):
     _run_analysis(params.hours, params.min_obs, params.split_compounds,
                    params.exclude_proteins)
     return _build_results_json()
+
+
+# ---------------------------------------------------------------------------
+# Report & Prediction (template engine)
+# ---------------------------------------------------------------------------
+class PredictRequest(BaseModel):
+    ingredients: list[str]
+
+
+@app.get("/report")
+async def get_report():
+    """Generate a template-based analysis report."""
+    if session.bac_df is None:
+        raise HTTPException(404, "No data loaded — upload a file first")
+
+    summary = _build_results_json()["summary"]
+
+    # Convert scores_by_period dict of DataFrames to the format generate_report expects
+    report = generate_report(
+        session.scores_all,
+        session.scores_by_period or {},
+        session.bac_df,
+        session.med_periods or {},
+        summary,
+    )
+    # Add combinations
+    report["combinations"] = detect_combinations(
+        session.lookback_df, session.bac_df, min_cooccurrence=3
+    )
+    return report
+
+
+@app.post("/predict")
+async def predict_meal(req: PredictRequest):
+    """Predict BAC risk for a planned meal."""
+    if session.bac_df is None:
+        raise HTTPException(404, "No data loaded — upload a file first")
+    if not req.ingredients:
+        raise HTTPException(400, "Provide at least one ingredient")
+
+    return predict_risk(
+        req.ingredients,
+        session.scores_all,
+        session.lookback_df,
+        session.bac_df,
+    )
