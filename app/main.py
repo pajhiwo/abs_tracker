@@ -211,19 +211,24 @@ def _build_results_json() -> dict:
                 }
             )
 
-    # Daily carbs aggregation for timeline chart
-    daily_carbs = []
+    # Carbs per meal for timeline chart (grouped by meal_datetime)
+    meal_carbs = []
     if meals_df is not None and not meals_df.empty and "carbs_g" in meals_df.columns:
-        grouped = meals_df.groupby("date").agg(
-            carbs_g=("carbs_g", "sum"),
-            sugars_g=("sugars_g", "sum"),
-        ).reset_index()
-        for _, row in grouped.iterrows():
-            daily_carbs.append({
-                "date": _serialize_date(row["date"]),
-                "carbs_g": round(float(row["carbs_g"]), 1) if pd.notna(row["carbs_g"]) else 0,
-                "sugars_g": round(float(row["sugars_g"]), 1) if pd.notna(row["sugars_g"]) else 0,
-            })
+        # Group by meal_datetime (or date+meal if no time)
+        group_col = "meal_datetime" if "meal_datetime" in meals_df.columns else "date"
+        valid = meals_df[meals_df[group_col].notna()]
+        if not valid.empty:
+            grouped = valid.groupby([group_col, "meal"]).agg(
+                carbs_g=("carbs_g", "sum"),
+                sugars_g=("sugars_g", "sum"),
+            ).reset_index()
+            for _, row in grouped.iterrows():
+                meal_carbs.append({
+                    "datetime": _serialize_date(row[group_col]),
+                    "meal": row["meal"],
+                    "carbs_g": round(float(row["carbs_g"]), 1) if pd.notna(row["carbs_g"]) else 0,
+                    "sugars_g": round(float(row["sugars_g"]), 1) if pd.notna(row["sugars_g"]) else 0,
+                })
 
     return {
         "filename": session.filename,
@@ -236,7 +241,7 @@ def _build_results_json() -> dict:
         "lift_scores_overall": scores_all,
         "lift_scores_by_period": scores_by_period,
         "lookback_by_reading": lookback_by_reading,
-        "daily_carbs": daily_carbs,
+        "meal_carbs": meal_carbs,
     }
 
 

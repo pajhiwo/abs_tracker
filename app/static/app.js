@@ -220,21 +220,6 @@ function renderTimeline() {
         },
     ];
 
-    // Daily carbs as bars on secondary y-axis
-    const dailyCarbs = currentData.daily_carbs || [];
-    if (dailyCarbs.length > 0) {
-        traces.push({
-            x: dailyCarbs.map(d => d.date),
-            y: dailyCarbs.map(d => d.carbs_g),
-            type: "bar",
-            name: "Carbs (g)",
-            yaxis: "y2",
-            marker: { color: "rgba(245,158,11,0.3)" },
-            hovertemplate: "Carbs: %{y:.0f}g<br>%{x}<extra></extra>",
-            width: 48 * 3600 * 1000, // bar width ~2 days in ms
-        });
-    }
-
     const medColors = [
         "rgba(34,197,94,",   // green
         "rgba(245,158,11,",  // amber
@@ -258,22 +243,63 @@ function renderTimeline() {
             title: "BAC (‰)",
             rangemode: "tozero",
         },
-        yaxis2: {
-            title: "Carbs (g)",
-            overlaying: "y",
-            side: "right",
-            rangemode: "tozero",
-            showgrid: false,
-            color: "rgba(245,158,11,0.6)",
-        },
         legend: { x: 0, y: 1.12, orientation: "h" },
         hovermode: "closest",
     };
 
     Plotly.newPlot("bac-timeline-chart", traces, layout, { responsive: true });
 
+    // --- Carbs/meals strip below ---
+    _renderCarbsTimeline();
+
     // --- Medication Gantt strip below ---
     _renderMedTimeline(medPeriods, medColors, medNames);
+}
+
+function _renderCarbsTimeline() {
+    const mealCarbs = currentData.meal_carbs || [];
+    const el = document.getElementById("carbs-timeline-chart");
+    if (mealCarbs.length === 0) {
+        el.innerHTML = "";
+        return;
+    }
+
+    const traces = [{
+        x: mealCarbs.map(d => d.datetime),
+        y: mealCarbs.map(d => d.carbs_g),
+        type: "bar",
+        name: "Carbs (g)",
+        marker: { color: "rgba(245,158,11,0.5)" },
+        hovertemplate: "<b>%{text}</b><br>Carbs: %{y:.0f}g<br>%{x}<extra></extra>",
+        text: mealCarbs.map(d => d.meal || ""),
+        width: 4 * 3600 * 1000,
+    }];
+
+    const bacChart = document.getElementById("bac-timeline-chart");
+    const xRange = bacChart && bacChart.layout ? bacChart.layout.xaxis.range : undefined;
+
+    const layout = {
+        paper_bgcolor: "#1a1d27",
+        plot_bgcolor: "#1a1d27",
+        font: { color: "#e1e4eb", size: 11 },
+        margin: { l: 140, r: 60, t: 0, b: 10 },
+        height: 120,
+        xaxis: {
+            gridcolor: "#2a2d3a",
+            showticklabels: false,
+            range: xRange,
+        },
+        yaxis: {
+            gridcolor: "#2a2d3a",
+            title: "Carbs (g)",
+            rangemode: "tozero",
+            color: "rgba(245,158,11,0.8)",
+        },
+        hovermode: "closest",
+        showlegend: false,
+    };
+
+    Plotly.newPlot("carbs-timeline-chart", traces, layout, { responsive: true });
 }
 
 function _renderMedTimeline(medPeriods, medColors, medNames) {
@@ -336,12 +362,14 @@ function _renderMedTimeline(medPeriods, medColors, medNames) {
 
     Plotly.newPlot("med-timeline-chart", traces, layout, { responsive: true });
 
-    // Link x-axis zoom between the two charts
+    // Link x-axis zoom across all timeline charts
     const bacEl = document.getElementById("bac-timeline-chart");
+    const carbsEl = document.getElementById("carbs-timeline-chart");
     const medEl = document.getElementById("med-timeline-chart");
+    const allEls = [bacEl, carbsEl, medEl].filter(el => el && el.data);
     let syncing = false;
 
-    function syncZoom(source, target, ev) {
+    function syncZoom(source, ev) {
         if (syncing) return;
         syncing = true;
         const update = {};
@@ -352,14 +380,16 @@ function _renderMedTimeline(medPeriods, medColors, medNames) {
             update["xaxis.autorange"] = true;
         }
         if (Object.keys(update).length > 0) {
-            Plotly.relayout(target, update).then(() => { syncing = false; });
+            const targets = allEls.filter(el => el !== source);
+            Promise.all(targets.map(t => Plotly.relayout(t, update))).then(() => { syncing = false; });
         } else {
             syncing = false;
         }
     }
 
-    bacEl.on("plotly_relayout", (ev) => syncZoom(bacEl, medEl, ev));
-    medEl.on("plotly_relayout", (ev) => syncZoom(medEl, bacEl, ev));
+    allEls.forEach(el => {
+        el.on("plotly_relayout", (ev) => syncZoom(el, ev));
+    });
 }
 
 // ---------------------------------------------------------------------------
