@@ -43,6 +43,10 @@
                     <label><input type="checkbox" id="split-compounds" checked> Split compound ingredients
                         (&amp;)</label>
                 </div>
+                <div class="control-group">
+                    <label><input type="checkbox" id="exclude-proteins"> Exclude proteins
+                        (meat, fish, eggs)</label>
+                </div>
                 <button id="recompute-btn" class="btn">Recompute</button>
             </div>
         </section>
@@ -92,6 +96,7 @@
                     <option value="overall">Overall</option>
                 </select>
                 <label><input type="checkbox" id="show-low-conf" checked> Show low confidence</label>
+                <label><input type="checkbox" id="hide-proteins"> Hide proteins (meat, fish, eggs)</label>
             </div>
             <div id="lift-chart"></div>
         </section>
@@ -99,13 +104,16 @@
         <!-- Episode Log Table -->
         <section id="episodes-section" class="card hidden">
             <h2>Episode Log</h2>
+            <input type="text" id="episode-filter" class="episode-filter"
+                placeholder="🔍 Filter by ingredient, date, medication…">
             <table id="episodes-table">
                 <thead>
                     <tr>
-                        <th>Date</th>
+                        <th class="sortable" data-sort="date" aria-sort="descending"><button type="button">Date <span class="sort-arrow" aria-hidden="true">▼</span></button></th>
                         <th>Time</th>
-                        <th>BAC (‰)</th>
+                        <th class="sortable" data-sort="bac" aria-sort="none"><button type="button">BAC (‰) <span class="sort-arrow" aria-hidden="true"></span></button></th>
                         <th>Medications</th>
+                        <th>Ingredients (in time window)</th>
                         <th>Comment</th>
                     </tr>
                 </thead>

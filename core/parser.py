@@ -35,13 +35,14 @@ C_COMMENT = 17
 MEAL_LABELS = {"Breakfast", "Snack", "Lunch", "Dinner"}
 HEADER_STRINGS = {"Date", "Meal", "Espisode", "Episode"}
 
-# Known medication keywords (lowercase) → canonical name
-MEDICATION_KEYWORDS = {
-    "rifaximin": "Rifaximin",
-    "activated charcoal": "Activated Charcoal",
+# Known medication spelling corrections (lowercase) → canonical name.
+# New medications are auto-detected from the Excel; this dict only normalises
+# known misspellings / abbreviations.
+MEDICATION_ALIASES = {
     "activated charcol": "Activated Charcoal",
     "charcol": "Activated Charcoal",
     "charcoal": "Activated Charcoal",
+    "vancomicin": "Vancomycin",
 }
 
 
@@ -53,6 +54,9 @@ def parse_medication_events(raw: pd.DataFrame) -> list[dict]:
     Scan date rows for medication entries and return a list of events:
         [{"date": date, "medication": str, "action": "start"|"stop"}, ...]
     Multiple medications on one row (comma-separated) are split into separate events.
+
+    Medication names are auto-detected by stripping "start"/"stop" from the
+    cell text, so new medications don't require code changes.
     """
     events = []
     date_rows = raw[raw[C_DATE].apply(lambda v: isinstance(v, datetime.datetime))]
@@ -63,20 +67,29 @@ def parse_medication_events(raw: pd.DataFrame) -> list[dict]:
             continue
         date = row[C_DATE].date()
         for part in str(med_raw).split(","):
-            part = part.strip().lower()
+            part = part.strip()
+            part_lower = part.lower()
             action = None
-            if "start" in part:
+            if "start" in part_lower:
                 action = "start"
-            elif "stop" in part:
+            elif "stop" in part_lower:
                 action = "stop"
             else:
                 continue
 
+            # Check aliases first for known misspellings
             med_name = None
-            for keyword, canonical in MEDICATION_KEYWORDS.items():
-                if keyword in part:
+            for alias, canonical in MEDICATION_ALIASES.items():
+                if alias in part_lower:
                     med_name = canonical
                     break
+
+            # Auto-detect: strip "start"/"stop" and use remaining text as name
+            if med_name is None:
+                name = part_lower.replace("start", "").replace("stop", "").strip()
+                name = name.strip("-–— ")  # remove stray separators
+                if name:
+                    med_name = name.title()
 
             if med_name and action:
                 events.append({"date": date, "medication": med_name, "action": action})
