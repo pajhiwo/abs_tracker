@@ -44,7 +44,7 @@
                         (&amp;)</label>
                 </div>
                 <div class="control-group">
-                    <label><input type="checkbox" id="exclude-proteins"> Exclude proteins
+                    <label><input type="checkbox" id="exclude-proteins" checked> Exclude proteins
                         (meat, fish, eggs)</label>
                 </div>
                 <button id="recompute-btn" class="btn">Recompute</button>
@@ -84,7 +84,15 @@
         <!-- BAC Timeline Chart -->
         <section id="timeline-section" class="card hidden">
             <h2>BAC Timeline</h2>
+            <div class="timeline-controls">
+                <button id="zoom-all-btn" class="btn btn-sm" disabled>All</button>
+                <button id="zoom-7d-btn" class="btn btn-sm">Last 7 days</button>
+                <button id="zoom-prev-btn" class="btn btn-sm hidden">← Previous</button>
+                <button id="zoom-next-btn" class="btn btn-sm hidden">Next →</button>
+            </div>
             <div id="bac-timeline-chart"></div>
+            <div id="carbs-timeline-chart"></div>
+            <div id="med-timeline-chart"></div>
         </section>
 
         <!-- Lift Scores Chart -->
@@ -101,6 +109,24 @@
             <div id="lift-chart"></div>
         </section>
 
+        <!-- Analysis Report -->
+        <section id="report-section" class="card hidden">
+            <h2>📋 Analysis Report</h2>
+            <button id="generate-report-btn" class="btn">Generate Report</button>
+            <div id="report-content" class="report-content hidden"></div>
+        </section>
+
+        <!-- Meal Planner -->
+        <section id="planner-section" class="card hidden">
+            <h2>🍽️ Meal Planner</h2>
+            <div class="planner-row">
+                <input type="text" id="planner-input" class="planner-input"
+                    placeholder="Enter ingredients (comma-separated): e.g. Rice, Chicken, Broccoli">
+                <button id="check-risk-btn" class="btn">Check Risk</button>
+            </div>
+            <div id="planner-result" class="planner-result hidden"></div>
+        </section>
+
         <!-- Episode Log Table -->
         <section id="episodes-section" class="card hidden">
             <h2>Episode Log</h2>
@@ -109,9 +135,11 @@
             <table id="episodes-table">
                 <thead>
                     <tr>
-                        <th class="sortable" data-sort="date" aria-sort="descending"><button type="button">Date <span class="sort-arrow" aria-hidden="true">▼</span></button></th>
+                        <th class="sortable" data-sort="date" aria-sort="descending"><button type="button">Date <span
+                                    class="sort-arrow" aria-hidden="true">▼</span></button></th>
                         <th>Time</th>
-                        <th class="sortable" data-sort="bac" aria-sort="none"><button type="button">BAC (‰) <span class="sort-arrow" aria-hidden="true"></span></button></th>
+                        <th class="sortable" data-sort="bac" aria-sort="none"><button type="button">BAC (‰) <span
+                                    class="sort-arrow" aria-hidden="true"></span></button></th>
                         <th>Medications</th>
                         <th>Ingredients (in time window)</th>
                         <th>Comment</th>

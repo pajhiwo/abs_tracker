@@ -1,17 +1,22 @@
 """
 Excel log parser — reads the ABS diet log into clean DataFrames.
+
+Supports two formats:
+  1. Multi-sheet (jo_log_new.xlsx): Sheet "Meals", "Bac Log", "Medications"
+  2. Legacy single-sheet (jo_log.xlsx): all data in one sheet
 """
 
 import datetime
 import warnings
 from pathlib import Path
 
+import openpyxl
 import pandas as pd
 
 warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
 # ---------------------------------------------------------------------------
-# Column indices (0-based) — matches jo_log.xlsx
+# Column indices (0-based) — legacy single-sheet format (jo_log.xlsx)
 # ---------------------------------------------------------------------------
 C_DATE = 0
 C_MEAL = 1
@@ -36,8 +41,6 @@ MEAL_LABELS = {"Breakfast", "Snack", "Lunch", "Dinner"}
 HEADER_STRINGS = {"Date", "Meal", "Espisode", "Episode"}
 
 # Known medication spelling corrections (lowercase) → canonical name.
-# New medications are auto-detected from the Excel; this dict only normalises
-# known misspellings / abbreviations.
 MEDICATION_ALIASES = {
     "activated charcol": "Activated Charcoal",
     "charcol": "Activated Charcoal",
@@ -47,52 +50,192 @@ MEDICATION_ALIASES = {
 
 
 # ---------------------------------------------------------------------------
-# parse_medication_events
+# Multi-sheet format detection
 # ---------------------------------------------------------------------------
-def parse_medication_events(raw: pd.DataFrame) -> list[dict]:
-    """
-    Scan date rows for medication entries and return a list of events:
-        [{"date": date, "medication": str, "action": "start"|"stop"}, ...]
-    Multiple medications on one row (comma-separated) are split into separate events.
+_MULTI_SHEET_NAMES = {"Meals", "Bac Log", "Medications"}
 
-    Medication names are auto-detected by stripping "start"/"stop" from the
-    cell text, so new medications don't require code changes.
-    """
-    events = []
-    date_rows = raw[raw[C_DATE].apply(lambda v: isinstance(v, datetime.datetime))]
 
-    for _, row in date_rows.iterrows():
-        med_raw = row[C_MEDICATION]
-        if pd.isna(med_raw):
+def _is_multi_sheet(path: str | Path) -> bool:
+    """Return True if the workbook has the expected multi-sheet layout."""
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    names = set(wb.sheetnames)
+    wb.close()
+    return _MULTI_SHEET_NAMES.issubset(names)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _is_date(val) -> bool:
+    return isinstance(val, datetime.datetime)
+
+
+def _normalise_med_name(raw: str) -> str:
+    """Normalise a medication name via aliases or title-case."""
+    lower = raw.strip().lower()
+    for alias, canonical in MEDICATION_ALIASES.items():
+        if alias in lower:
+            return canonical
+    return raw.strip().title()
+
+
+# ---------------------------------------------------------------------------
+# Multi-sheet parsers
+# ---------------------------------------------------------------------------
+def _parse_meals_sheet(
+    ws,
+    *,
+    split_compounds: bool = True,
+) -> list[dict]:
+    """Parse the Meals worksheet (date-row → meal-row → ingredient-rows)."""
+    rows_out: list[dict] = []
+    current_date = None
+    current_meal = None
+    current_meal_time = None
+    current_meal_dt = None
+
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        # Columns: Date(0) Meal(1) Time(2) Product(3) Measure(4) g(5)
+        #          kcal(6) Protein(7) Fat(8) Sat(9) Carbs(10) Sugars(11) Fibre(12)
+        val_date = row[0]
+        val_meal = row[1] if len(row) > 1 else None
+        val_time = row[2] if len(row) > 2 else None
+        val_product = row[3] if len(row) > 3 else None
+        val_grams = row[5] if len(row) > 5 else None
+        val_carbs = row[10] if len(row) > 10 else None
+        val_sugars = row[11] if len(row) > 11 else None
+
+        # Date row
+        if _is_date(val_date):
+            current_date = val_date.date()
+            current_meal = None
+            current_meal_time = None
+            current_meal_dt = None
             continue
-        date = row[C_DATE].date()
-        for part in str(med_raw).split(","):
-            part = part.strip()
-            part_lower = part.lower()
-            action = None
-            if "start" in part_lower:
-                action = "start"
-            elif "stop" in part_lower:
-                action = "stop"
+
+        if current_date is None:
+            continue
+
+        # Meal row (has meal label + optional time, no product)
+        if val_meal and str(val_meal) in MEAL_LABELS:
+            current_meal = str(val_meal)
+            if isinstance(val_time, datetime.time):
+                current_meal_time = val_time
+                current_meal_dt = datetime.datetime.combine(current_date, val_time)
             else:
-                continue
+                current_meal_time = None
+                current_meal_dt = None
+            continue
 
-            # Check aliases first for known misspellings
-            med_name = None
-            for alias, canonical in MEDICATION_ALIASES.items():
-                if alias in part_lower:
-                    med_name = canonical
-                    break
+        # Ingredient row (has product name)
+        if val_product and str(val_product).strip():
+            raw_name = str(val_product).strip()
 
-            # Auto-detect: strip "start"/"stop" and use remaining text as name
-            if med_name is None:
-                name = part_lower.replace("start", "").replace("stop", "").strip()
-                name = name.strip("-–— ")  # remove stray separators
-                if name:
-                    med_name = name.title()
+            if split_compounds and "&" in raw_name:
+                parts = [p.strip() for p in raw_name.split("&")]
+                last_part = parts[-1]
+                suffix = ""
+                last_words = last_part.rsplit(None, 1)
+                if len(last_words) == 2:
+                    suffix = last_words[1].lower()
+                    if suffix in ("soup", "stew", "salad", "bowl", "mix"):
+                        parts[-1] = last_words[0]
+                    else:
+                        suffix = ""
+                ingredient_names = [p.strip().title() for p in parts if p.strip()]
+            else:
+                ingredient_names = [raw_name]
 
-            if med_name and action:
-                events.append({"date": date, "medication": med_name, "action": action})
+            grams = float(val_grams) if val_grams is not None else None
+            carbs = float(val_carbs) if val_carbs is not None else None
+            sugars = float(val_sugars) if val_sugars is not None else None
+
+            for ingredient in ingredient_names:
+                rows_out.append(
+                    {
+                        "date": current_date,
+                        "meal": current_meal,
+                        "meal_time": current_meal_time,
+                        "meal_datetime": current_meal_dt,
+                        "ingredient": ingredient,
+                        "quantity_g": grams,
+                        "carbs_g": carbs,
+                        "sugars_g": sugars,
+                    }
+                )
+
+    return rows_out
+
+
+def _parse_bac_sheet(ws) -> list[dict]:
+    """Parse the Bac Log worksheet (date-row → reading-rows)."""
+    rows_out: list[dict] = []
+    current_date = None
+
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        # Columns: Date(0) Time(1) BAC‰(2) Episode(3)
+        val_date = row[0]
+        val_time = row[1] if len(row) > 1 else None
+        val_bac = row[2] if len(row) > 2 else None
+        val_episode = row[3] if len(row) > 3 else None
+
+        if _is_date(val_date):
+            current_date = val_date.date()
+            continue
+
+        if current_date is None:
+            continue
+
+        if val_bac is not None:
+            bac_dt = (
+                datetime.datetime.combine(current_date, val_time)
+                if isinstance(val_time, datetime.time)
+                else None
+            )
+            is_episode = (
+                pd.notna(val_episode) and str(val_episode).strip().lower() == "yes"
+            )
+            rows_out.append(
+                {
+                    "date": current_date,
+                    "bac_time": (
+                        val_time if isinstance(val_time, datetime.time) else None
+                    ),
+                    "bac_datetime": bac_dt,
+                    "promille": float(val_bac),
+                    "episode": is_episode,
+                    "comment": None,
+                }
+            )
+
+    return rows_out
+
+
+def _parse_med_sheet(ws) -> list[dict]:
+    """Parse the Medications worksheet (date-row → event-rows)."""
+    events: list[dict] = []
+    current_date = None
+
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        # Columns: Date(0) Medication(1) Action(2) Comment(3)
+        val_date = row[0]
+        val_med = row[1] if len(row) > 1 else None
+        val_action = row[2] if len(row) > 2 else None
+
+        if _is_date(val_date):
+            current_date = val_date.date()
+            continue
+
+        if current_date is None:
+            continue
+
+        if val_med and val_action:
+            action = str(val_action).strip().lower()
+            if action in ("start", "stop"):
+                med_name = _normalise_med_name(str(val_med))
+                events.append(
+                    {"date": current_date, "medication": med_name, "action": action}
+                )
 
     return sorted(events, key=lambda e: e["date"])
 
@@ -150,7 +293,7 @@ def get_active_medications(
 
 
 # ---------------------------------------------------------------------------
-# parse_log
+# parse_log — main entry point (auto-detects format)
 # ---------------------------------------------------------------------------
 def parse_log(
     path: str | Path,
@@ -160,11 +303,9 @@ def parse_log(
     """
     Parse the Excel log into two clean DataFrames plus medication periods.
 
-    Parameters
-    ----------
-    path             : path to the .xlsx log file
-    split_compounds  : if True, split ingredient names containing "&" into
-                       separate rows (e.g. "A & B soup" → "A", "B")
+    Auto-detects format:
+      - Multi-sheet: sheets "Meals", "Bac Log", "Medications"
+      - Legacy: single sheet with all data
 
     Returns
     -------
@@ -172,6 +313,98 @@ def parse_log(
     bac_df      : one row per BAC reading, with active_medications column
     med_periods : {medication: [{start, stop}, ...]}
     """
+    if _is_multi_sheet(path):
+        return _parse_log_multi(path, split_compounds=split_compounds)
+    return _parse_log_legacy(path, split_compounds=split_compounds)
+
+
+# ---------------------------------------------------------------------------
+# Multi-sheet parse_log
+# ---------------------------------------------------------------------------
+def _parse_log_multi(
+    path: str | Path,
+    *,
+    split_compounds: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Parse multi-sheet format (jo_log_new.xlsx)."""
+    wb = openpyxl.load_workbook(path, data_only=True)
+
+    # Medications first (needed for active_medications on BAC rows)
+    med_events = _parse_med_sheet(wb["Medications"])
+    med_periods = build_medication_periods(med_events)
+
+    # Meals
+    meals_rows = _parse_meals_sheet(wb["Meals"], split_compounds=split_compounds)
+    meals_df = pd.DataFrame(meals_rows)
+
+    # BAC
+    bac_rows = _parse_bac_sheet(wb["Bac Log"])
+    # Enrich BAC rows with active_medications
+    for row in bac_rows:
+        active_meds = get_active_medications(row["date"], med_periods)
+        row["active_medications"] = ", ".join(active_meds) if active_meds else "none"
+    bac_df = pd.DataFrame(bac_rows)
+
+    wb.close()
+
+    if not meals_df.empty:
+        meals_df["date"] = pd.to_datetime(meals_df["date"])
+    if not bac_df.empty:
+        bac_df["date"] = pd.to_datetime(bac_df["date"])
+        bac_df["bac_datetime"] = pd.to_datetime(bac_df["bac_datetime"])
+        bac_df = bac_df.sort_values("bac_datetime").reset_index(drop=True)
+
+    return meals_df, bac_df, med_periods
+
+
+# ---------------------------------------------------------------------------
+# Legacy: parse_medication_events (single-sheet format)
+# ---------------------------------------------------------------------------
+def parse_medication_events(raw: pd.DataFrame) -> list[dict]:
+    """
+    Scan date rows in legacy single-sheet format for medication entries.
+    Returns: [{"date": date, "medication": str, "action": "start"|"stop"}, ...]
+    """
+    events = []
+    date_rows = raw[raw[C_DATE].apply(lambda v: isinstance(v, datetime.datetime))]
+
+    for _, row in date_rows.iterrows():
+        med_raw = row[C_MEDICATION]
+        if pd.isna(med_raw):
+            continue
+        date = row[C_DATE].date()
+        for part in str(med_raw).split(","):
+            part = part.strip()
+            part_lower = part.lower()
+            action = None
+            if "start" in part_lower:
+                action = "start"
+            elif "stop" in part_lower:
+                action = "stop"
+            else:
+                continue
+
+            med_name = _normalise_med_name(
+                part_lower.replace("start", "")
+                .replace("stop", "")
+                .strip()
+                .strip("-–— ")
+            )
+            if med_name and action:
+                events.append({"date": date, "medication": med_name, "action": action})
+
+    return sorted(events, key=lambda e: e["date"])
+
+
+# ---------------------------------------------------------------------------
+# Legacy single-sheet parse_log
+# ---------------------------------------------------------------------------
+def _parse_log_legacy(
+    path: str | Path,
+    *,
+    split_compounds: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Parse legacy single-sheet format (jo_log.xlsx)."""
     raw = pd.read_excel(path, sheet_name=0, header=None)
     raw = raw[~raw[C_DATE].astype(str).isin(HEADER_STRINGS)].reset_index(drop=True)
 
@@ -259,6 +492,8 @@ def parse_log(
                 ingredient_names = [raw_name]
 
             for ingredient in ingredient_names:
+                carbs = row[C_CARBS] if pd.notna(row[C_CARBS]) else None
+                sugars = row[C_SUGARS] if pd.notna(row[C_SUGARS]) else None
                 meals_rows.append(
                     {
                         "date": current_date,
@@ -267,6 +502,8 @@ def parse_log(
                         "meal_datetime": current_meal_dt,
                         "ingredient": ingredient,
                         "quantity_g": float(grams) if grams is not None else None,
+                        "carbs_g": float(carbs) if carbs is not None else None,
+                        "sugars_g": float(sugars) if sugars is not None else None,
                     }
                 )
 

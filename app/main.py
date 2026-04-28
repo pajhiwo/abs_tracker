@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from core import parse_log, map_lookback, compute_lift_scores
+from ai import generate_report, predict_risk, detect_combinations
 
 app = FastAPI(title="ABS Diet Tracker", version="0.1.0")
 
@@ -28,13 +29,46 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 # Protein/meat keywords — these ingredients are very low in fermentable
 # carbohydrates and unlikely to trigger ABS episodes.
 PROTEIN_KEYWORDS = {
-    "chicken", "beef", "pork", "lamb", "turkey", "duck", "veal", "venison",
-    "bison", "rabbit", "goat", "ham", "bacon", "sausage",
-    "salmon", "tuna", "cod", "trout", "shrimp", "prawn", "crab", "lobster",
-    "mackerel", "sardine", "herring", "tilapia", "halibut", "bass", "perch",
-    "catfish", "anchovy", "squid", "octopus", "mussel", "clam", "oyster",
-    "scallop", "fish",
-    "egg", "eggs",
+    "chicken",
+    "beef",
+    "pork",
+    "lamb",
+    "turkey",
+    "duck",
+    "veal",
+    "venison",
+    "bison",
+    "rabbit",
+    "goat",
+    "ham",
+    "bacon",
+    "sausage",
+    "salmon",
+    "tuna",
+    "cod",
+    "trout",
+    "shrimp",
+    "prawn",
+    "crab",
+    "lobster",
+    "mackerel",
+    "sardine",
+    "herring",
+    "tilapia",
+    "halibut",
+    "bass",
+    "perch",
+    "catfish",
+    "anchovy",
+    "squid",
+    "octopus",
+    "mussel",
+    "clam",
+    "oyster",
+    "scallop",
+    "fish",
+    "egg",
+    "eggs",
 }
 
 
@@ -77,8 +111,12 @@ def _serialize_date(val):
     return str(val)
 
 
-def _run_analysis(hours: float, min_obs: int, split_compounds: bool = True,
-                   exclude_proteins: bool = False):
+def _run_analysis(
+    hours: float,
+    min_obs: int,
+    split_compounds: bool = True,
+    exclude_proteins: bool = False,
+):
     """Run lookback + lift scores on current session data.
 
     If split_compounds changed, re-parse from raw_bytes first.
@@ -106,8 +144,10 @@ def _run_analysis(hours: float, min_obs: int, split_compounds: bool = True,
     session.exclude_proteins = exclude_proteins
     lookback = map_lookback(session.bac_df, session.meals_df, hours=hours)
     if exclude_proteins:
-        mask = lookback["ingredient"].str.lower().apply(
-            lambda x: not any(kw in x for kw in PROTEIN_KEYWORDS)
+        mask = (
+            lookback["ingredient"]
+            .str.lower()
+            .apply(lambda x: not any(kw in x for kw in PROTEIN_KEYWORDS))
         )
         lookback = lookback[mask]
     session.lookback_df = lookback
@@ -210,6 +250,39 @@ def _build_results_json() -> dict:
                 }
             )
 
+    # Carbs per meal for timeline chart (grouped by meal_datetime)
+    meal_carbs = []
+    if meals_df is not None and not meals_df.empty and "carbs_g" in meals_df.columns:
+        # Group by meal_datetime (or date+meal if no time)
+        group_col = "meal_datetime" if "meal_datetime" in meals_df.columns else "date"
+        valid = meals_df[meals_df[group_col].notna()]
+        if not valid.empty:
+            grouped = (
+                valid.groupby([group_col, "meal"])
+                .agg(
+                    carbs_g=("carbs_g", "sum"),
+                    sugars_g=("sugars_g", "sum"),
+                )
+                .reset_index()
+            )
+            for _, row in grouped.iterrows():
+                meal_carbs.append(
+                    {
+                        "datetime": _serialize_date(row[group_col]),
+                        "meal": row["meal"],
+                        "carbs_g": (
+                            round(float(row["carbs_g"]), 1)
+                            if pd.notna(row["carbs_g"])
+                            else 0
+                        ),
+                        "sugars_g": (
+                            round(float(row["sugars_g"]), 1)
+                            if pd.notna(row["sugars_g"])
+                            else 0
+                        ),
+                    }
+                )
+
     return {
         "filename": session.filename,
         "hours": session.hours,
@@ -221,6 +294,7 @@ def _build_results_json() -> dict:
         "lift_scores_overall": scores_all,
         "lift_scores_by_period": scores_by_period,
         "lookback_by_reading": lookback_by_reading,
+        "meal_carbs": meal_carbs,
     }
 
 
@@ -240,6 +314,7 @@ async def upload_file(
     hours: float = 3.0,
     min_obs: int = 3,
     split_compounds: bool = True,
+    exclude_proteins: bool = True,
 ):
     """Upload an Excel file, parse it, and run analysis."""
     if not file.filename.endswith((".xlsx", ".xls")):
@@ -273,7 +348,7 @@ async def upload_file(
     session.med_periods = med_periods
     session.filename = file.filename
 
-    _run_analysis(hours, min_obs, split_compounds)
+    _run_analysis(hours, min_obs, split_compounds, exclude_proteins)
     return _build_results_json()
 
 
@@ -290,6 +365,53 @@ async def recompute(params: AnalysisParams):
     """Recompute analysis with new parameters (without re-uploading)."""
     if session.bac_df is None:
         raise HTTPException(404, "No data loaded — upload a file first")
-    _run_analysis(params.hours, params.min_obs, params.split_compounds,
-                   params.exclude_proteins)
+    _run_analysis(
+        params.hours, params.min_obs, params.split_compounds, params.exclude_proteins
+    )
     return _build_results_json()
+
+
+# ---------------------------------------------------------------------------
+# Report & Prediction (template engine)
+# ---------------------------------------------------------------------------
+class PredictRequest(BaseModel):
+    ingredients: list[str]
+
+
+@app.get("/report")
+async def get_report():
+    """Generate a template-based analysis report."""
+    if session.bac_df is None:
+        raise HTTPException(404, "No data loaded — upload a file first")
+
+    summary = _build_results_json()["summary"]
+
+    # Convert scores_by_period dict of DataFrames to the format generate_report expects
+    report = generate_report(
+        session.scores_all,
+        session.scores_by_period or {},
+        session.bac_df,
+        session.med_periods or {},
+        summary,
+    )
+    # Add combinations
+    report["combinations"] = detect_combinations(
+        session.lookback_df, session.bac_df, min_cooccurrence=3
+    )
+    return report
+
+
+@app.post("/predict")
+async def predict_meal(req: PredictRequest):
+    """Predict BAC risk for a planned meal."""
+    if session.bac_df is None:
+        raise HTTPException(404, "No data loaded — upload a file first")
+    if not req.ingredients:
+        raise HTTPException(400, "Provide at least one ingredient")
+
+    return predict_risk(
+        req.ingredients,
+        session.scores_all,
+        session.lookback_df,
+        session.bac_df,
+    )

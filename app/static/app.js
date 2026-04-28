@@ -21,6 +21,13 @@ const showLowConf = document.getElementById("show-low-conf");
 const hideProteins = document.getElementById("hide-proteins");
 const splitCompounds = document.getElementById("split-compounds");
 const excludeProteins = document.getElementById("exclude-proteins");
+const reportSection = document.getElementById("report-section");
+const plannerSection = document.getElementById("planner-section");
+const generateReportBtn = document.getElementById("generate-report-btn");
+const reportContent = document.getElementById("report-content");
+const plannerInput = document.getElementById("planner-input");
+const checkRiskBtn = document.getElementById("check-risk-btn");
+const plannerResult = document.getElementById("planner-result");
 
 let currentData = null;
 
@@ -53,9 +60,10 @@ async function uploadFile(file) {
     const hours = hoursSlider.value;
     const minObs = minobsSlider.value;
     const split = splitCompounds.checked;
+    const excl = excludeProteins.checked;
 
     try {
-        const resp = await fetch(`/upload?hours=${hours}&min_obs=${minObs}&split_compounds=${split}`, {
+        const resp = await fetch(`/upload?hours=${hours}&min_obs=${minObs}&split_compounds=${split}&exclude_proteins=${excl}`, {
             method: "POST",
             body: formData,
         });
@@ -123,7 +131,14 @@ function renderAll() {
     summarySection.classList.remove("hidden");
     timelineSection.classList.remove("hidden");
     liftSection.classList.remove("hidden");
+    reportSection.classList.remove("hidden");
+    plannerSection.classList.remove("hidden");
     episodesSection.classList.remove("hidden");
+
+    // Reset report on new data
+    reportContent.classList.add("hidden");
+    reportContent.innerHTML = "";
+    plannerResult.classList.add("hidden");
 
     hoursSlider.value = currentData.hours;
     hoursValue.textContent = currentData.hours;
@@ -165,15 +180,33 @@ function renderTimeline() {
     const normal = readings.filter(r => !r.episode);
     const episodes = readings.filter(r => r.episode);
 
+    // Build x/y arrays with null gaps where readings are >8h apart
+    const GAP_MS = 8 * 60 * 60 * 1000; // 8 hours
+    const bacX = [];
+    const bacY = [];
+    for (let i = 0; i < readings.length; i++) {
+        if (i > 0) {
+            const prev = new Date(readings[i - 1].bac_datetime).getTime();
+            const curr = new Date(readings[i].bac_datetime).getTime();
+            if (curr - prev > GAP_MS) {
+                bacX.push(null);
+                bacY.push(null);
+            }
+        }
+        bacX.push(readings[i].bac_datetime);
+        bacY.push(readings[i].promille);
+    }
+
     const traces = [
         {
-            x: normal.map(r => r.bac_datetime),
-            y: normal.map(r => r.promille),
+            x: bacX,
+            y: bacY,
             mode: "lines+markers",
             type: "scatter",
             name: "BAC Reading",
             marker: { color: "#6366f1", size: 6 },
             line: { color: "#6366f1", width: 1.5 },
+            connectgaps: false,
             hovertemplate: "%{y:.2f}‰<br>%{x}<extra></extra>",
         },
         {
@@ -187,62 +220,23 @@ function renderTimeline() {
         },
     ];
 
-    // Medication period shading
-    const shapes = [];
-    const colors = {
-        "Activated Charcoal": "rgba(34,197,94,0.08)",
-        "Rifaximin": "rgba(99,102,241,0.08)",
-    };
-    const borderColors = {
-        "Activated Charcoal": "rgba(34,197,94,0.3)",
-        "Rifaximin": "rgba(99,102,241,0.3)",
-    };
-
-    for (const [med, ranges] of Object.entries(medPeriods)) {
-        for (const range of ranges) {
-            const stop = range.stop || new Date().toISOString();
-            shapes.push({
-                type: "rect",
-                xref: "x", yref: "paper",
-                x0: range.start, x1: stop,
-                y0: 0, y1: 1,
-                fillcolor: colors[med] || "rgba(200,200,200,0.08)",
-                line: { color: borderColors[med] || "rgba(200,200,200,0.2)", width: 1 },
-            });
-        }
-    }
-
-    // Medication legend annotations — stagger vertically to avoid overlap
-    const annotations = [];
+    const medColors = [
+        "rgba(34,197,94,",   // green
+        "rgba(245,158,11,",  // amber
+        "rgba(99,102,241,",  // indigo
+        "rgba(236,72,153,",  // pink
+        "rgba(14,165,233,",  // sky
+    ];
     const medNames = Object.keys(medPeriods);
-    for (let mi = 0; mi < medNames.length; mi++) {
-        const med = medNames[mi];
-        const ranges = medPeriods[med];
-        // Short label to save space
-        const shortLabel = med.replace("Activated Charcoal", "A. Charcoal");
-        for (const range of ranges) {
-            const yOffset = 1.02 + mi * 0.05; // stagger each medication up
-            annotations.push({
-                x: range.start,
-                y: yOffset,
-                xref: "x", yref: "paper",
-                text: `<b>${shortLabel}</b>`,
-                showarrow: false,
-                font: { size: 10, color: borderColors[med] || "#8b8fa3" },
-                xanchor: "left",
-                yanchor: "bottom",
-            });
-        }
-    }
 
     const layout = {
         paper_bgcolor: "#1a1d27",
         plot_bgcolor: "#1a1d27",
         font: { color: "#e1e4eb" },
-        margin: { l: 50, r: 20, t: 40, b: 50 },
+        margin: { l: 140, r: 60, t: 30, b: 10 },
         xaxis: {
             gridcolor: "#2a2d3a",
-            title: "Date",
+            showticklabels: false,
         },
         yaxis: {
             gridcolor: "#2a2d3a",
@@ -250,12 +244,284 @@ function renderTimeline() {
             rangemode: "tozero",
         },
         legend: { x: 0, y: 1.12, orientation: "h" },
-        shapes: shapes,
-        annotations: annotations,
         hovermode: "closest",
     };
 
     Plotly.newPlot("bac-timeline-chart", traces, layout, { responsive: true });
+
+    // --- Carbs/meals strip below ---
+    _renderCarbsTimeline();
+
+    // --- Medication Gantt strip below ---
+    _renderMedTimeline(medPeriods, medColors, medNames);
+}
+
+// ---------------------------------------------------------------------------
+// Timeline zoom controls
+// ---------------------------------------------------------------------------
+(function () {
+    const allBtn = document.getElementById("zoom-all-btn");
+    const weekBtn = document.getElementById("zoom-7d-btn");
+    const prevBtn = document.getElementById("zoom-prev-btn");
+    const nextBtn = document.getElementById("zoom-next-btn");
+    let windowEnd = null; // ms timestamp of current 7-day window end
+
+    function applyRange(startMs, endMs) {
+        const s = new Date(startMs).toISOString();
+        const e = new Date(endMs).toISOString();
+        const update = { "xaxis.range[0]": s, "xaxis.range[1]": e };
+        const els = ["bac-timeline-chart", "carbs-timeline-chart", "med-timeline-chart"]
+            .map(id => document.getElementById(id))
+            .filter(el => el && el.data);
+        Promise.all(els.map(el => Plotly.relayout(el, update)));
+    }
+
+    function resetToAll() {
+        const els = ["bac-timeline-chart", "carbs-timeline-chart", "med-timeline-chart"]
+            .map(id => document.getElementById(id))
+            .filter(el => el && el.data);
+        Promise.all(els.map(el => Plotly.relayout(el, { "xaxis.autorange": true })));
+    }
+
+    function enterWeekMode() {
+        allBtn.disabled = false;
+        weekBtn.disabled = true;
+        prevBtn.classList.remove("hidden");
+        nextBtn.classList.remove("hidden");
+        windowEnd = Date.now();
+        applyRange(windowEnd - 7 * 86400000, windowEnd);
+    }
+
+    function exitWeekMode() {
+        allBtn.disabled = true;
+        weekBtn.disabled = false;
+        prevBtn.classList.add("hidden");
+        nextBtn.classList.add("hidden");
+        windowEnd = null;
+        resetToAll();
+    }
+
+    allBtn.addEventListener("click", exitWeekMode);
+    weekBtn.addEventListener("click", enterWeekMode);
+    prevBtn.addEventListener("click", () => {
+        if (windowEnd == null) return;
+        windowEnd -= 7 * 86400000;
+        applyRange(windowEnd - 7 * 86400000, windowEnd);
+    });
+    nextBtn.addEventListener("click", () => {
+        if (windowEnd == null) return;
+        windowEnd += 7 * 86400000;
+        applyRange(windowEnd - 7 * 86400000, windowEnd);
+    });
+})();
+
+function _renderCarbsTimeline() {
+    const mealCarbs = currentData.meal_carbs || [];
+    const el = document.getElementById("carbs-timeline-chart");
+    if (mealCarbs.length === 0) {
+        el.innerHTML = "";
+        return;
+    }
+
+    const traces = [{
+        x: mealCarbs.map(d => d.datetime),
+        y: mealCarbs.map(d => d.carbs_g),
+        type: "bar",
+        name: "Carbs (g)",
+        marker: { color: "rgba(245,158,11,0.5)" },
+        hovertemplate: "<b>%{text}</b><br>Carbs: %{y:.0f}g<br>%{x}<extra></extra>",
+        text: mealCarbs.map(d => d.meal || ""),
+        width: 4 * 3600 * 1000,
+    }];
+
+    const bacChart = document.getElementById("bac-timeline-chart");
+    const xRange = bacChart && bacChart.layout ? bacChart.layout.xaxis.range : undefined;
+
+    const layout = {
+        paper_bgcolor: "#1a1d27",
+        plot_bgcolor: "#1a1d27",
+        font: { color: "#e1e4eb", size: 11 },
+        margin: { l: 140, r: 60, t: 0, b: 10 },
+        height: 120,
+        xaxis: {
+            gridcolor: "#2a2d3a",
+            showticklabels: false,
+            range: xRange,
+        },
+        yaxis: {
+            gridcolor: "#2a2d3a",
+            title: "Carbs (g)",
+            rangemode: "tozero",
+            color: "rgba(245,158,11,0.8)",
+        },
+        hovermode: "closest",
+        showlegend: false,
+    };
+
+    Plotly.newPlot("carbs-timeline-chart", traces, layout, { responsive: true });
+}
+
+function _renderMedTimeline(medPeriods, medColors, medNames) {
+    if (medNames.length === 0) {
+        document.getElementById("med-timeline-chart").innerHTML = "";
+        return;
+    }
+
+    const traces = [];
+    const shapes = [];
+
+    for (let mi = 0; mi < medNames.length; mi++) {
+        const med = medNames[mi];
+        const colorBase = medColors[mi % medColors.length];
+        const solidColor = colorBase + "0.8)";
+        const ranges = medPeriods[med];
+
+        for (let ri = 0; ri < ranges.length; ri++) {
+            const range = ranges[ri];
+            const start = range.start;
+            const stop = range.stop || new Date().toISOString();
+            const startDate = start.slice(0, 10);
+            const stopDate = stop.slice(0, 10);
+
+            // Use invisible scatter for hover
+            traces.push({
+                x: [start, stop],
+                y: [mi, mi],
+                mode: "markers",
+                type: "scatter",
+                marker: { size: 8, color: "rgba(0,0,0,0)" },
+                showlegend: false,
+                cliponaxis: false,
+                hovertemplate: `<b>${med}</b><br>${startDate} → ${stopDate}<extra></extra>`,
+            });
+
+            // Rectangle shape for the bar
+            shapes.push({
+                type: "rect",
+                xref: "x",
+                yref: "y",
+                x0: start,
+                x1: stop,
+                y0: mi - 0.3,
+                y1: mi + 0.3,
+                fillcolor: solidColor,
+                line: { width: 0 },
+            });
+        }
+    }
+
+    // Get x-axis range from BAC chart to keep them aligned
+    const bacChart = document.getElementById("bac-timeline-chart");
+    const xRange = bacChart && bacChart.layout ? bacChart.layout.xaxis.range : undefined;
+
+    const height = Math.max(60, medNames.length * 28 + 50);
+
+    const layout = {
+        paper_bgcolor: "#1a1d27",
+        plot_bgcolor: "#1a1d27",
+        font: { color: "#e1e4eb", size: 11 },
+        margin: { l: 140, r: 20, t: 0, b: 40 },
+        height: height,
+        xaxis: {
+            gridcolor: "#2a2d3a",
+            title: "Date",
+            range: xRange,
+        },
+        yaxis: {
+            gridcolor: "rgba(0,0,0,0)",
+            zeroline: false,
+            automargin: true,
+            fixedrange: true,
+            tickvals: medNames.map((_, i) => i),
+            ticktext: medNames,
+            range: [-0.5, medNames.length - 0.5],
+        },
+        shapes: shapes,
+        hovermode: "closest",
+    };
+
+    Plotly.newPlot("med-timeline-chart", traces, layout, { responsive: true });
+
+    // Link x-axis zoom across all timeline charts
+    const bacEl = document.getElementById("bac-timeline-chart");
+    const carbsEl = document.getElementById("carbs-timeline-chart");
+    const medEl = document.getElementById("med-timeline-chart");
+    const allEls = [bacEl, carbsEl, medEl].filter(el => el && el.data);
+    let syncing = false;
+
+    function syncZoom(source, ev) {
+        if (syncing) return;
+        syncing = true;
+        const update = {};
+        if (ev["xaxis.range[0]"] != null && ev["xaxis.range[1]"] != null) {
+            update["xaxis.range[0]"] = ev["xaxis.range[0]"];
+            update["xaxis.range[1]"] = ev["xaxis.range[1]"];
+        } else if (ev["xaxis.autorange"]) {
+            update["xaxis.autorange"] = true;
+        }
+        if (Object.keys(update).length > 0) {
+            const targets = allEls.filter(el => el !== source);
+            Promise.all(targets.map(t => Plotly.relayout(t, update)))
+                .then(() => Promise.all([_rescaleBacY(), _rescaleCarbsY()]))
+                .then(() => { syncing = false; });
+        } else {
+            syncing = false;
+        }
+    }
+
+    /** Rescale BAC y-axis to max visible value in current x range. */
+    function _rescaleBacY() {
+        if (!bacEl || !bacEl.layout) return;
+        const readings = currentData.bac_readings || [];
+        if (readings.length === 0) return;
+
+        const xRange = bacEl.layout.xaxis.range;
+        let maxY = 0;
+        if (xRange) {
+            const lo = new Date(xRange[0]).getTime();
+            const hi = new Date(xRange[1]).getTime();
+            for (const r of readings) {
+                const t = new Date(r.bac_datetime).getTime();
+                if (t >= lo && t <= hi && r.promille > maxY) maxY = r.promille;
+            }
+        } else {
+            for (const r of readings) {
+                if (r.promille > maxY) maxY = r.promille;
+            }
+        }
+        if (maxY > 0) {
+            return Plotly.relayout(bacEl, { "yaxis.range": [0, maxY * 1.1] });
+        }
+    }
+
+    /** Rescale carbs y-axis to max visible value in current x range. */
+    function _rescaleCarbsY() {
+        if (!carbsEl || !carbsEl.layout || !carbsEl.data || !carbsEl.data[0]) return;
+        const mealCarbs = currentData.meal_carbs || [];
+        if (mealCarbs.length === 0) return;
+
+        const xRange = carbsEl.layout.xaxis.range;
+        let maxY = 0;
+        if (xRange) {
+            const lo = new Date(xRange[0]).getTime();
+            const hi = new Date(xRange[1]).getTime();
+            for (const d of mealCarbs) {
+                const t = new Date(d.datetime).getTime();
+                if (t >= lo && t <= hi && d.carbs_g > maxY) maxY = d.carbs_g;
+            }
+        } else {
+            for (const d of mealCarbs) {
+                if (d.carbs_g > maxY) maxY = d.carbs_g;
+            }
+        }
+        if (maxY > 0) {
+            return Plotly.relayout(carbsEl, { "yaxis.range": [0, maxY * 1.1] });
+        }
+    }
+
+    allEls.forEach(el => {
+        el.on("plotly_relayout", (ev) => syncZoom(el, ev));
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -322,7 +588,7 @@ function renderLiftChart() {
             const conf = s.low_confidence ? " (low conf)" : "";
             return `Lift: ${lift}${conf} | n=${s.n_present}`;
         }),
-        hovertemplate: "%{y}<br>Lift: %{x:.2f}<br>Mean BAC present: %{customdata[0]:.3f}‰<br>Mean BAC absent: %{customdata[1]:.3f}‰<br>n=%{customdata[2]}<extra></extra>",
+        hovertemplate: "%{y}<br>Lift: %{x:.2f}<br>Avg BAC present: %{customdata[0]:.3f}‰<br>Avg BAC absent: %{customdata[1]:.3f}‰<br>n=%{customdata[2]}<extra></extra>",
         customdata: scores.map(s => [s.mean_bac_present || 0, s.mean_bac_absent || 0, s.n_present]),
     }];
 
@@ -538,4 +804,266 @@ function renderEpisodeTable() {
     });
 
     _updateSortArrows();
+}
+
+// ---------------------------------------------------------------------------
+// Analysis Report
+// ---------------------------------------------------------------------------
+generateReportBtn.addEventListener("click", async () => {
+    generateReportBtn.disabled = true;
+    generateReportBtn.textContent = "Generating…";
+    try {
+        const resp = await fetch("/report");
+        if (!resp.ok) throw new Error("Report generation failed");
+        const data = await resp.json();
+        _renderReport(data);
+    } catch (e) {
+        alert(e.message);
+    } finally {
+        generateReportBtn.disabled = false;
+        generateReportBtn.textContent = "Generate Report";
+    }
+});
+
+function _renderReport(data) {
+    reportContent.innerHTML = "";
+    reportContent.classList.remove("hidden");
+
+    // Summary
+    const summaryEl = document.createElement("div");
+    summaryEl.className = "report-block";
+    const summaryH = document.createElement("h3");
+    summaryH.textContent = "Summary";
+    summaryEl.appendChild(summaryH);
+    const table = document.createElement("table");
+    table.className = "report-table summary-table";
+    const tbody = document.createElement("tbody");
+    const s = currentData ? currentData.summary : {};
+    const rows = [
+        ["Date range", `${s.date_min || "?"} \u2192 ${s.date_max || "?"}`],
+        ["BAC readings", s.total_readings || 0],
+        ["Episodes (BAC > 0)", s.episodes || 0],
+        ["Avg BAC", `${(s.bac_mean || 0).toFixed(2)}\u2030`],
+        ["Max BAC", `${(s.bac_max || 0).toFixed(2)}\u2030`],
+        ["Unique ingredients", s.unique_ingredients || 0],
+        ["Lookback pairs", s.lookback_pairs || 0],
+    ];
+    for (const [label, value] of rows) {
+        const tr = document.createElement("tr");
+        const th = document.createElement("td");
+        th.className = "summary-label";
+        th.textContent = label;
+        const td = document.createElement("td");
+        td.textContent = value;
+        tr.appendChild(th);
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    summaryEl.appendChild(table);
+    reportContent.appendChild(summaryEl);
+
+    // Top suspects
+    if (data.top_suspects && data.top_suspects.length > 0) {
+        const block = document.createElement("div");
+        block.className = "report-block";
+        const h = document.createElement("h3");
+        h.textContent = "\uD83D\uDD34 Top Suspect Ingredients";
+        block.appendChild(h);
+        const table = document.createElement("table");
+        table.className = "report-table";
+        table.innerHTML = "<thead><tr><th>Ingredient</th><th>Lift</th><th>n</th><th>Assessment</th></tr></thead>";
+        const tbody = document.createElement("tbody");
+        for (const s of data.top_suspects) {
+            const tr = document.createElement("tr");
+            const cells = [s.ingredient, s.lift.toFixed(2), s.n, s.assessment];
+            for (const val of cells) {
+                const td = document.createElement("td");
+                td.textContent = val;
+                tr.appendChild(td);
+            }
+            tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        block.appendChild(table);
+        reportContent.appendChild(block);
+    }
+
+    // Safe ingredients
+    if (data.safe_ingredients && data.safe_ingredients.length > 0) {
+        const block = document.createElement("div");
+        block.className = "report-block";
+        const h = document.createElement("h3");
+        h.textContent = "\uD83D\uDFE2 Likely Safe Ingredients";
+        block.appendChild(h);
+        const table = document.createElement("table");
+        table.className = "report-table";
+        table.innerHTML = "<thead><tr><th>Ingredient</th><th>Lift</th><th>n</th><th>Avg BAC</th></tr></thead>";
+        const tbody = document.createElement("tbody");
+        for (const s of data.safe_ingredients) {
+            const tr = document.createElement("tr");
+            const cells = [s.ingredient, s.lift.toFixed(2), s.n, s.mean_bac_present.toFixed(3) + "\u2030"];
+            for (const val of cells) {
+                const td = document.createElement("td");
+                td.textContent = val;
+                tr.appendChild(td);
+            }
+            tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        block.appendChild(table);
+        reportContent.appendChild(block);
+    }
+
+    // Medication comparison
+    if (data.medication_comparison && data.medication_comparison.length > 0) {
+        const block = document.createElement("div");
+        block.className = "report-block";
+        const h = document.createElement("h3");
+        h.textContent = "\uD83D\uDC8A Medication Period Comparison";
+        block.appendChild(h);
+        const table = document.createElement("table");
+        table.className = "report-table";
+        table.innerHTML = "<thead><tr><th>Period</th><th>Avg BAC</th><th>Readings</th><th>Top Suspects</th></tr></thead>";
+        const tbody = document.createElement("tbody");
+        for (const m of data.medication_comparison) {
+            const tr = document.createElement("tr");
+            const cells = [
+                m.period,
+                m.mean_bac != null ? m.mean_bac.toFixed(3) + "\u2030" : "—",
+                m.n_readings,
+                m.top_3_suspects.join(", "),
+            ];
+            for (const val of cells) {
+                const td = document.createElement("td");
+                td.textContent = val;
+                tr.appendChild(td);
+            }
+            tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        block.appendChild(table);
+        reportContent.appendChild(block);
+    }
+
+    // Combinations
+    if (data.combinations && data.combinations.length > 0) {
+        const block = document.createElement("div");
+        block.className = "report-block";
+        const h = document.createElement("h3");
+        h.textContent = "\uD83D\uDD17 Ingredient Combinations";
+        block.appendChild(h);
+        const table = document.createElement("table");
+        table.className = "report-table";
+        table.innerHTML = "<thead><tr><th>Pair</th><th>Count</th><th>Avg BAC</th><th>Pair Lift</th></tr></thead>";
+        const tbody = document.createElement("tbody");
+        for (const c of data.combinations) {
+            const tr = document.createElement("tr");
+            const cells = [
+                c.pair.join(" + "),
+                c.count,
+                c.mean_bac.toFixed(3) + "\u2030",
+                c.pair_lift.toFixed(2),
+            ];
+            for (const val of cells) {
+                const td = document.createElement("td");
+                td.textContent = val;
+                tr.appendChild(td);
+            }
+            tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        block.appendChild(table);
+        reportContent.appendChild(block);
+    }
+
+    // Caveats
+    if (data.caveats && data.caveats.length > 0) {
+        const block = document.createElement("div");
+        block.className = "report-block";
+        const h = document.createElement("h3");
+        h.textContent = "\u26A0\uFE0F Caveats";
+        block.appendChild(h);
+        const ul = document.createElement("ul");
+        for (const c of data.caveats) {
+            const li = document.createElement("li");
+            li.textContent = c;
+            ul.appendChild(li);
+        }
+        block.appendChild(ul);
+        reportContent.appendChild(block);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Meal Planner
+// ---------------------------------------------------------------------------
+checkRiskBtn.addEventListener("click", async () => {
+    const raw = plannerInput.value.trim();
+    if (!raw) return;
+    const ingredients = raw.split(",").map(s => s.trim()).filter(Boolean);
+    if (ingredients.length === 0) return;
+
+    checkRiskBtn.disabled = true;
+    checkRiskBtn.textContent = "Checking…";
+    try {
+        const resp = await fetch("/predict", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ingredients }),
+        });
+        if (!resp.ok) throw new Error("Prediction failed");
+        const data = await resp.json();
+        _renderPrediction(data);
+    } catch (e) {
+        alert(e.message);
+    } finally {
+        checkRiskBtn.disabled = false;
+        checkRiskBtn.textContent = "Check Risk";
+    }
+});
+
+function _renderPrediction(data) {
+    plannerResult.innerHTML = "";
+    plannerResult.classList.remove("hidden");
+
+    // Risk level badge
+    const badge = document.createElement("div");
+    badge.className = "risk-badge risk-" + data.risk_level.toLowerCase();
+    badge.textContent = data.risk_level;
+    plannerResult.appendChild(badge);
+
+    // Weighted lift
+    if (data.weighted_lift != null) {
+        const lift = document.createElement("p");
+        lift.className = "risk-lift";
+        lift.textContent = `Weighted lift: ${data.weighted_lift.toFixed(2)}`;
+        plannerResult.appendChild(lift);
+    }
+
+    // Reasoning
+    const reason = document.createElement("p");
+    reason.className = "risk-reasoning";
+    reason.textContent = data.reasoning;
+    plannerResult.appendChild(reason);
+
+    // Ingredient breakdown
+    if (data.ingredient_details && data.ingredient_details.length > 0) {
+        const list = document.createElement("div");
+        list.className = "risk-details";
+        for (const d of data.ingredient_details) {
+            const item = document.createElement("span");
+            item.className = "ing-pill";
+            if (d.known) {
+                const color = d.lift > 1.0 ? "#ef4444" : "#22c55e";
+                item.style.color = color;
+                item.textContent = `${d.ingredient} (${d.lift.toFixed(2)})`;
+            } else {
+                item.style.color = "#8b8fa3";
+                item.textContent = `${d.ingredient} (?)`;
+            }
+            list.appendChild(item);
+        }
+        plannerResult.appendChild(list);
+    }
 }
