@@ -151,6 +151,17 @@ input[type="range"] {
     background: var(--accent-hover);
 }
 
+.btn-sm {
+    padding: 0.3rem 0.7rem;
+    font-size: 0.8rem;
+}
+
+.timeline-controls {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
 .btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;

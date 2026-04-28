@@ -256,6 +256,65 @@ function renderTimeline() {
     _renderMedTimeline(medPeriods, medColors, medNames);
 }
 
+// ---------------------------------------------------------------------------
+// Timeline zoom controls
+// ---------------------------------------------------------------------------
+(function () {
+    const allBtn = document.getElementById("zoom-all-btn");
+    const weekBtn = document.getElementById("zoom-7d-btn");
+    const prevBtn = document.getElementById("zoom-prev-btn");
+    const nextBtn = document.getElementById("zoom-next-btn");
+    let windowEnd = null; // ms timestamp of current 7-day window end
+
+    function applyRange(startMs, endMs) {
+        const s = new Date(startMs).toISOString();
+        const e = new Date(endMs).toISOString();
+        const update = { "xaxis.range[0]": s, "xaxis.range[1]": e };
+        const els = ["bac-timeline-chart", "carbs-timeline-chart", "med-timeline-chart"]
+            .map(id => document.getElementById(id))
+            .filter(el => el && el.data);
+        Promise.all(els.map(el => Plotly.relayout(el, update)));
+    }
+
+    function resetToAll() {
+        const els = ["bac-timeline-chart", "carbs-timeline-chart", "med-timeline-chart"]
+            .map(id => document.getElementById(id))
+            .filter(el => el && el.data);
+        Promise.all(els.map(el => Plotly.relayout(el, { "xaxis.autorange": true })));
+    }
+
+    function enterWeekMode() {
+        allBtn.disabled = false;
+        weekBtn.disabled = true;
+        prevBtn.classList.remove("hidden");
+        nextBtn.classList.remove("hidden");
+        windowEnd = Date.now();
+        applyRange(windowEnd - 7 * 86400000, windowEnd);
+    }
+
+    function exitWeekMode() {
+        allBtn.disabled = true;
+        weekBtn.disabled = false;
+        prevBtn.classList.add("hidden");
+        nextBtn.classList.add("hidden");
+        windowEnd = null;
+        resetToAll();
+    }
+
+    allBtn.addEventListener("click", exitWeekMode);
+    weekBtn.addEventListener("click", enterWeekMode);
+    prevBtn.addEventListener("click", () => {
+        if (windowEnd == null) return;
+        windowEnd -= 7 * 86400000;
+        applyRange(windowEnd - 7 * 86400000, windowEnd);
+    });
+    nextBtn.addEventListener("click", () => {
+        if (windowEnd == null) return;
+        windowEnd += 7 * 86400000;
+        applyRange(windowEnd - 7 * 86400000, windowEnd);
+    });
+})();
+
 function _renderCarbsTimeline() {
     const mealCarbs = currentData.meal_carbs || [];
     const el = document.getElementById("carbs-timeline-chart");
@@ -309,6 +368,7 @@ function _renderMedTimeline(medPeriods, medColors, medNames) {
     }
 
     const traces = [];
+    const shapes = [];
 
     for (let mi = 0; mi < medNames.length; mi++) {
         const med = medNames[mi];
@@ -323,14 +383,29 @@ function _renderMedTimeline(medPeriods, medColors, medNames) {
             const startDate = start.slice(0, 10);
             const stopDate = stop.slice(0, 10);
 
+            // Use invisible scatter for hover
             traces.push({
                 x: [start, stop],
-                y: [med, med],
-                mode: "lines",
+                y: [mi, mi],
+                mode: "markers",
                 type: "scatter",
-                line: { color: solidColor, width: 14 },
+                marker: { size: 8, color: "rgba(0,0,0,0)" },
                 showlegend: false,
+                cliponaxis: false,
                 hovertemplate: `<b>${med}</b><br>${startDate} → ${stopDate}<extra></extra>`,
+            });
+
+            // Rectangle shape for the bar
+            shapes.push({
+                type: "rect",
+                xref: "x",
+                yref: "y",
+                x0: start,
+                x1: stop,
+                y0: mi - 0.3,
+                y1: mi + 0.3,
+                fillcolor: solidColor,
+                line: { width: 0 },
             });
         }
     }
@@ -354,9 +429,14 @@ function _renderMedTimeline(medPeriods, medColors, medNames) {
         },
         yaxis: {
             gridcolor: "rgba(0,0,0,0)",
+            zeroline: false,
             automargin: true,
             fixedrange: true,
+            tickvals: medNames.map((_, i) => i),
+            ticktext: medNames,
+            range: [-0.5, medNames.length - 0.5],
         },
+        shapes: shapes,
         hovermode: "closest",
     };
 
@@ -381,9 +461,61 @@ function _renderMedTimeline(medPeriods, medColors, medNames) {
         }
         if (Object.keys(update).length > 0) {
             const targets = allEls.filter(el => el !== source);
-            Promise.all(targets.map(t => Plotly.relayout(t, update))).then(() => { syncing = false; });
+            Promise.all(targets.map(t => Plotly.relayout(t, update)))
+                .then(() => Promise.all([_rescaleBacY(), _rescaleCarbsY()]))
+                .then(() => { syncing = false; });
         } else {
             syncing = false;
+        }
+    }
+
+    /** Rescale BAC y-axis to max visible value in current x range. */
+    function _rescaleBacY() {
+        if (!bacEl || !bacEl.layout) return;
+        const readings = currentData.bac_readings || [];
+        if (readings.length === 0) return;
+
+        const xRange = bacEl.layout.xaxis.range;
+        let maxY = 0;
+        if (xRange) {
+            const lo = new Date(xRange[0]).getTime();
+            const hi = new Date(xRange[1]).getTime();
+            for (const r of readings) {
+                const t = new Date(r.bac_datetime).getTime();
+                if (t >= lo && t <= hi && r.promille > maxY) maxY = r.promille;
+            }
+        } else {
+            for (const r of readings) {
+                if (r.promille > maxY) maxY = r.promille;
+            }
+        }
+        if (maxY > 0) {
+            return Plotly.relayout(bacEl, { "yaxis.range": [0, maxY * 1.1] });
+        }
+    }
+
+    /** Rescale carbs y-axis to max visible value in current x range. */
+    function _rescaleCarbsY() {
+        if (!carbsEl || !carbsEl.layout || !carbsEl.data || !carbsEl.data[0]) return;
+        const mealCarbs = currentData.meal_carbs || [];
+        if (mealCarbs.length === 0) return;
+
+        const xRange = carbsEl.layout.xaxis.range;
+        let maxY = 0;
+        if (xRange) {
+            const lo = new Date(xRange[0]).getTime();
+            const hi = new Date(xRange[1]).getTime();
+            for (const d of mealCarbs) {
+                const t = new Date(d.datetime).getTime();
+                if (t >= lo && t <= hi && d.carbs_g > maxY) maxY = d.carbs_g;
+            }
+        } else {
+            for (const d of mealCarbs) {
+                if (d.carbs_g > maxY) maxY = d.carbs_g;
+            }
+        }
+        if (maxY > 0) {
+            return Plotly.relayout(carbsEl, { "yaxis.range": [0, maxY * 1.1] });
         }
     }
 
