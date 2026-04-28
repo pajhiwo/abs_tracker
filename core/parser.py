@@ -193,13 +193,14 @@ def _parse_bac_sheet(ws) -> list[dict]:
                 else None
             )
             is_episode = (
-                pd.notna(val_episode)
-                and str(val_episode).strip().lower() == "yes"
+                pd.notna(val_episode) and str(val_episode).strip().lower() == "yes"
             )
             rows_out.append(
                 {
                     "date": current_date,
-                    "bac_time": val_time if isinstance(val_time, datetime.time) else None,
+                    "bac_time": (
+                        val_time if isinstance(val_time, datetime.time) else None
+                    ),
                     "bac_datetime": bac_dt,
                     "promille": float(val_bac),
                     "episode": is_episode,
@@ -384,7 +385,10 @@ def parse_medication_events(raw: pd.DataFrame) -> list[dict]:
                 continue
 
             med_name = _normalise_med_name(
-                part_lower.replace("start", "").replace("stop", "").strip().strip("-–— ")
+                part_lower.replace("start", "")
+                .replace("stop", "")
+                .strip()
+                .strip("-–— ")
             )
             if med_name and action:
                 events.append({"date": date, "medication": med_name, "action": action})

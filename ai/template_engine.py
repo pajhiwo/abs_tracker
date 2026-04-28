@@ -15,10 +15,10 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 # Thresholds
 # ---------------------------------------------------------------------------
-LIFT_STRONG = 1.5     # lift above this → "Strong suspect"
-LIFT_MODERATE = 1.0   # lift above this → "Moderate suspect"
-RISK_HIGH = 1.3       # weighted lift above this → HIGH risk
-RISK_LOW = 0.8        # weighted lift below this → LOW risk
+LIFT_STRONG = 1.5  # lift above this → "Strong suspect"
+LIFT_MODERATE = 1.0  # lift above this → "Moderate suspect"
+RISK_HIGH = 1.3  # weighted lift above this → HIGH risk
+RISK_LOW = 0.8  # weighted lift below this → LOW risk
 
 
 # ---------------------------------------------------------------------------
@@ -85,23 +85,41 @@ def generate_report(
     medication_comparison = []
     for period, df in scores_by_period.items():
         period_bac = bac_df[bac_df["active_medications"] == period]
-        mean_bac = round(float(period_bac["promille"].mean()), 3) if not period_bac.empty else None
+        mean_bac = (
+            round(float(period_bac["promille"].mean()), 3)
+            if not period_bac.empty
+            else None
+        )
         n_readings = len(period_bac)
 
         suspects_in_period = []
         if df is not None and not df.empty:
-            high = df[(df["lift"] > LIFT_MODERATE) & ~df["low_confidence"] & ~df["always_present"]]
-            suspects_in_period = high.sort_values("lift", ascending=False).head(3)["ingredient"].tolist()
+            high = df[
+                (df["lift"] > LIFT_MODERATE)
+                & ~df["low_confidence"]
+                & ~df["always_present"]
+            ]
+            suspects_in_period = (
+                high.sort_values("lift", ascending=False).head(3)["ingredient"].tolist()
+            )
 
-        medication_comparison.append({
-            "period": period,
-            "mean_bac": mean_bac,
-            "n_readings": n_readings,
-            "top_3_suspects": suspects_in_period if suspects_in_period else ["(insufficient data)"],
-        })
+        medication_comparison.append(
+            {
+                "period": period,
+                "mean_bac": mean_bac,
+                "n_readings": n_readings,
+                "top_3_suspects": (
+                    suspects_in_period
+                    if suspects_in_period
+                    else ["(insufficient data)"]
+                ),
+            }
+        )
 
     # Sort: no-medication first, then by mean_bac desc
-    medication_comparison.sort(key=lambda x: (x["period"] != "none", -(x["mean_bac"] or 0)))
+    medication_comparison.sort(
+        key=lambda x: (x["period"] != "none", -(x["mean_bac"] or 0))
+    )
 
     # --- Caveats ---
     caveats = []
@@ -121,7 +139,9 @@ def generate_report(
         caveats.append(
             f"Dataset is small ({total} readings). Patterns may change as more data is collected."
         )
-    caveats.append("Correlation ≠ causation — high-carb foods may co-occur with other unmeasured triggers.")
+    caveats.append(
+        "Correlation ≠ causation — high-carb foods may co-occur with other unmeasured triggers."
+    )
 
     return {
         "summary_text": summary_text,
@@ -171,22 +191,26 @@ def predict_risk(
         ing_lower = ing_clean.lower()
         info = lift_lookup.get(ing_lower)
         if info and info["lift"] is not None:
-            details.append({
-                "ingredient": ing_clean,
-                "lift": round(info["lift"], 2),
-                "n": info["n"],
-                "known": True,
-                "low_confidence": info["low_confidence"],
-            })
+            details.append(
+                {
+                    "ingredient": ing_clean,
+                    "lift": round(info["lift"], 2),
+                    "n": info["n"],
+                    "known": True,
+                    "low_confidence": info["low_confidence"],
+                }
+            )
             known_lifts.append(info["lift"])
         else:
-            details.append({
-                "ingredient": ing_clean,
-                "lift": None,
-                "n": 0,
-                "known": False,
-                "low_confidence": False,
-            })
+            details.append(
+                {
+                    "ingredient": ing_clean,
+                    "lift": None,
+                    "n": 0,
+                    "known": False,
+                    "low_confidence": False,
+                }
+            )
 
     # Weighted average lift (equal weights for now — all known ingredients)
     if known_lifts:
@@ -266,15 +290,19 @@ def detect_combinations(
     for (a, b), bac_indices in pair_readings.items():
         if len(bac_indices) < min_cooccurrence:
             continue
-        mean_bac_both = float(bac_df.loc[bac_df.index.isin(bac_indices), "promille"].mean())
+        mean_bac_both = float(
+            bac_df.loc[bac_df.index.isin(bac_indices), "promille"].mean()
+        )
         pair_lift = round(mean_bac_both / overall_mean, 2) if overall_mean > 0 else None
 
-        results.append({
-            "pair": [a, b],
-            "count": len(bac_indices),
-            "mean_bac": round(mean_bac_both, 3),
-            "pair_lift": pair_lift,
-        })
+        results.append(
+            {
+                "pair": [a, b],
+                "count": len(bac_indices),
+                "mean_bac": round(mean_bac_both, 3),
+                "pair_lift": pair_lift,
+            }
+        )
 
     results.sort(key=lambda x: -(x["pair_lift"] or 0))
     return results
