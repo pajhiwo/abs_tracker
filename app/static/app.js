@@ -15,6 +15,8 @@ const hoursSlider = document.getElementById("hours-slider");
 const hoursValue = document.getElementById("hours-value");
 const minobsSlider = document.getElementById("minobs-slider");
 const minobsValue = document.getElementById("minobs-value");
+const thresholdSlider = document.getElementById("threshold-slider");
+const thresholdValue = document.getElementById("threshold-value");
 const recomputeBtn = document.getElementById("recompute-btn");
 const periodSelect = document.getElementById("period-select");
 const showLowConf = document.getElementById("show-low-conf");
@@ -90,6 +92,12 @@ hoursSlider.addEventListener("input", () => {
 minobsSlider.addEventListener("input", () => {
     minobsValue.textContent = minobsSlider.value;
 });
+thresholdSlider.addEventListener("input", () => {
+    thresholdValue.textContent = thresholdSlider.value;
+});
+// Sync label with actual slider value on load
+thresholdSlider.value = "2.0";
+thresholdValue.textContent = thresholdSlider.value;
 
 recomputeBtn.addEventListener("click", async () => {
     if (!currentData) return;
@@ -104,6 +112,7 @@ recomputeBtn.addEventListener("click", async () => {
                 min_obs: parseInt(minobsSlider.value),
                 split_compounds: splitCompounds.checked,
                 exclude_proteins: excludeProteins.checked,
+                episode_threshold: parseFloat(thresholdSlider.value),
             }),
         });
         if (!resp.ok) throw new Error("Recompute failed");
@@ -177,8 +186,8 @@ function renderTimeline() {
     const medPeriods = currentData.medication_periods;
 
     // Main BAC trace
-    const normal = readings.filter(r => !r.episode);
-    const episodes = readings.filter(r => r.episode);
+    const episodeThreshold = parseFloat(thresholdSlider.value);
+    const episodes = readings.filter(r => r.promille >= episodeThreshold);
 
     // Build x/y arrays with null gaps where readings are >8h apart
     const GAP_MS = 8 * 60 * 60 * 1000; // 8 hours
@@ -288,7 +297,10 @@ function renderTimeline() {
         weekBtn.disabled = true;
         prevBtn.classList.remove("hidden");
         nextBtn.classList.remove("hidden");
-        windowEnd = Date.now();
+        const lastDate = currentData && currentData.summary && currentData.summary.date_max
+            ? new Date(currentData.summary.date_max).getTime() + 86400000
+            : Date.now();
+        windowEnd = lastDate;
         applyRange(windowEnd - 7 * 86400000, windowEnd);
     }
 
@@ -313,6 +325,20 @@ function renderTimeline() {
         windowEnd += 7 * 86400000;
         applyRange(windowEnd - 7 * 86400000, windowEnd);
     });
+
+    // Enable "All" button whenever user manually zooms on any chart
+    const observer = new MutationObserver(() => {
+        const bacEl = document.getElementById("bac-timeline-chart");
+        if (bacEl && !bacEl._zoomListenerAttached) {
+            bacEl._zoomListenerAttached = true;
+            bacEl.on("plotly_relayout", (ev) => {
+                if (ev["xaxis.range[0]"] != null) {
+                    allBtn.disabled = false;
+                }
+            });
+        }
+    });
+    observer.observe(document.getElementById("timeline-section"), { childList: true, subtree: true });
 })();
 
 function _renderCarbsTimeline() {
@@ -379,7 +405,8 @@ function _renderMedTimeline(medPeriods, medColors, medNames) {
         for (let ri = 0; ri < ranges.length; ri++) {
             const range = ranges[ri];
             const start = range.start;
-            const stop = range.stop || new Date().toISOString();
+            const lastDataDate = currentData.summary.date_max || new Date().toISOString();
+            const stop = range.stop || lastDataDate;
             const startDate = start.slice(0, 10);
             const stopDate = stop.slice(0, 10);
 
@@ -420,7 +447,7 @@ function _renderMedTimeline(medPeriods, medColors, medNames) {
         paper_bgcolor: "#1a1d27",
         plot_bgcolor: "#1a1d27",
         font: { color: "#e1e4eb", size: 11 },
-        margin: { l: 140, r: 20, t: 0, b: 40 },
+        margin: { l: 140, r: 60, t: 0, b: 40 },
         height: height,
         xaxis: {
             gridcolor: "#2a2d3a",
@@ -691,12 +718,12 @@ function renderEpisodeTable() {
 
     for (const r of readings) {
         const tr = document.createElement("tr");
-        if (r.episode) tr.classList.add("episode-row");
+        if (r.promille >= parseFloat(thresholdSlider.value)) tr.classList.add("episode-row");
 
         const date = r.bac_datetime ? r.bac_datetime.slice(0, 10) : r.date || "—";
         const time = r.bac_time || "—";
         const bacPct = Math.round((r.promille / maxBac) * 100);
-        const bacColor = r.episode ? "#ef4444" : "#6366f1";
+        const bacColor = r.promille >= parseFloat(thresholdSlider.value) ? "#ef4444" : "#6366f1";
 
         // Ingredients in window
         const ingredients = lookback[String(r.bac_idx)] || [];

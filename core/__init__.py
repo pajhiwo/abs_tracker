@@ -5,6 +5,7 @@ from core.parser import (
     parse_medication_events,
     build_medication_periods,
     get_active_medications,
+    EPISODE_THRESHOLD,
     C_DATE,
     C_MEAL,
     C_MEAL_TIME,
