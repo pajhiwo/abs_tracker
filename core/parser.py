@@ -48,6 +48,9 @@ MEDICATION_ALIASES = {
     "vancomicin": "Vancomycin",
 }
 
+# Default BAC threshold (‰) above which a reading is considered an "episode".
+EPISODE_THRESHOLD = 2.0
+
 
 # ---------------------------------------------------------------------------
 # Multi-sheet format detection
@@ -173,11 +176,11 @@ def _parse_bac_sheet(ws) -> list[dict]:
     current_date = None
 
     for row in ws.iter_rows(min_row=2, values_only=True):
-        # Columns: Date(0) Time(1) BAC‰(2) Episode(3)
+        # Columns: Date(0) Time(1) BAC‰(2) Comment(3)
         val_date = row[0]
         val_time = row[1] if len(row) > 1 else None
         val_bac = row[2] if len(row) > 2 else None
-        val_episode = row[3] if len(row) > 3 else None
+        val_comment = row[3] if len(row) > 3 else None
 
         if _is_date(val_date):
             current_date = val_date.date()
@@ -192,8 +195,10 @@ def _parse_bac_sheet(ws) -> list[dict]:
                 if isinstance(val_time, datetime.time)
                 else None
             )
-            is_episode = (
-                pd.notna(val_episode) and str(val_episode).strip().lower() == "yes"
+            comment = (
+                str(val_comment).strip()
+                if val_comment is not None and str(val_comment).strip()
+                else None
             )
             rows_out.append(
                 {
@@ -203,8 +208,7 @@ def _parse_bac_sheet(ws) -> list[dict]:
                     ),
                     "bac_datetime": bac_dt,
                     "promille": float(val_bac),
-                    "episode": is_episode,
-                    "comment": None,
+                    "comment": comment,
                 }
             )
 
@@ -352,6 +356,7 @@ def _parse_log_multi(
     if not bac_df.empty:
         bac_df["date"] = pd.to_datetime(bac_df["date"])
         bac_df["bac_datetime"] = pd.to_datetime(bac_df["bac_datetime"])
+        bac_df["episode"] = bac_df["promille"] >= EPISODE_THRESHOLD
         bac_df = bac_df.sort_values("bac_datetime").reset_index(drop=True)
 
     return meals_df, bac_df, med_periods

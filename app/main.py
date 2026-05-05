@@ -83,6 +83,7 @@ class SessionData:
     min_obs = 3
     split_compounds = True
     exclude_proteins = False
+    episode_threshold = 2.0
     filename = None
     raw_bytes = None  # keep uploaded file for re-parse on toggle
 
@@ -95,6 +96,7 @@ class AnalysisParams(BaseModel):
     min_obs: int = 3
     split_compounds: bool = True
     exclude_proteins: bool = False
+    episode_threshold: float = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -185,9 +187,11 @@ def _build_results_json() -> dict:
                     "bac_time": _serialize_date(row.get("bac_time")),
                     "bac_datetime": _serialize_date(row["bac_datetime"]),
                     "promille": row["promille"],
-                    "episode": bool(row["episode"]),
+                    "episode": bool(row["promille"] >= session.episode_threshold),
                     "active_medications": row["active_medications"],
-                    "comment": row.get("comment"),
+                    "comment": (
+                        row.get("comment") if pd.notna(row.get("comment")) else None
+                    ),
                 }
             )
 
@@ -227,7 +231,7 @@ def _build_results_json() -> dict:
             "bac_min": float(bac_df["promille"].min()),
             "bac_max": float(bac_df["promille"].max()),
             "bac_mean": round(float(bac_df["promille"].mean()), 4),
-            "episodes": int(bac_df["episode"].sum()),
+            "episodes": int((bac_df["promille"] >= session.episode_threshold).sum()),
             "unique_ingredients": (
                 int(meals_df["ingredient"].nunique()) if meals_df is not None else 0
             ),
@@ -365,6 +369,7 @@ async def recompute(params: AnalysisParams):
     """Recompute analysis with new parameters (without re-uploading)."""
     if session.bac_df is None:
         raise HTTPException(404, "No data loaded — upload a file first")
+    session.episode_threshold = params.episode_threshold
     _run_analysis(
         params.hours, params.min_obs, params.split_compounds, params.exclude_proteins
     )
