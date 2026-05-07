@@ -20,6 +20,8 @@ app = FastAPI(title="ABS Diet Tracker", version="0.1.0")
 
 # Serve static files (HTML/CSS/JS)
 STATIC_DIR = Path(__file__).parent / "static"
+EXAMPLE_DIR = Path(__file__).parent.parent / "example"
+app.mount("/example", StaticFiles(directory=str(EXAMPLE_DIR)), name="example")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # Session store (auto-detects InMemory vs Redis)
