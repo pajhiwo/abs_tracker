@@ -76,6 +76,8 @@ async function uploadFile(file) {
         currentData = await resp.json();
         uploadStatus.textContent = `✓ Loaded ${file.name}`;
         uploadStatus.className = "status success";
+        const exLink = document.getElementById("example-link");
+        if (exLink) exLink.style.display = "none";
         renderAll();
     } catch (e) {
         uploadStatus.textContent = `✗ ${e.message}`;

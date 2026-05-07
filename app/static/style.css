@@ -84,6 +84,20 @@ main {
     background: rgba(99, 102, 241, 0.05);
 }
 
+.example-link {
+    text-align: center;
+    font-size: 0.85rem;
+    color: #888;
+    margin: 0.5rem 0 1.5rem;
+}
+.example-link a {
+    color: #7eb8da;
+    text-decoration: none;
+}
+.example-link a:hover {
+    text-decoration: underline;
+}
+
 .drop-zone p {
     color: var(--text-dim);
 }
