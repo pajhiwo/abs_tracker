@@ -4,17 +4,17 @@ ABS Tracker — FastAPI Web Application
 Run with:  uvicorn app.main:app --reload
 """
 
-import io
 import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Cookie, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from core import parse_log, map_lookback, compute_lift_scores
 from ai import generate_report, predict_risk, detect_combinations
+from app.sessions import SessionData, create_store, new_session_id
 
 app = FastAPI(title="ABS Diet Tracker", version="0.1.0")
 
@@ -22,12 +22,33 @@ app = FastAPI(title="ABS Diet Tracker", version="0.1.0")
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+# Session store (auto-detects InMemory vs Redis)
+store = create_store()
+
 
 # ---------------------------------------------------------------------------
-# In-memory session store (single-user for now)
+# Session helper
 # ---------------------------------------------------------------------------
-# Protein/meat keywords — these ingredients are very low in fermentable
-# carbohydrates and unlikely to trigger ABS episodes.
+def _get_or_create_session(
+    response: Response, session_id: str | None
+) -> tuple[str, SessionData]:
+    """Return (session_id, SessionData), creating new if needed."""
+    if session_id:
+        data = store.get(session_id)
+        if data is not None:
+            return session_id, data
+    # New session
+    sid = new_session_id()
+    data = SessionData()
+    store.set(sid, data)
+    response.set_cookie("session_id", sid, httponly=True, samesite="lax")
+    return sid, data
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+# Protein/meat keywords — very low in fermentable carbohydrates.
 PROTEIN_KEYWORDS = {
     "chicken",
     "beef",
@@ -72,25 +93,6 @@ PROTEIN_KEYWORDS = {
 }
 
 
-class SessionData:
-    meals_df = None
-    bac_df = None
-    med_periods = None
-    lookback_df = None
-    scores_all = None
-    scores_by_period = None
-    hours = 3.0
-    min_obs = 3
-    split_compounds = True
-    exclude_proteins = False
-    episode_threshold = 2.0
-    filename = None
-    raw_bytes = None  # keep uploaded file for re-parse on toggle
-
-
-session = SessionData()
-
-
 class AnalysisParams(BaseModel):
     hours: float = 3.0
     min_obs: int = 3
@@ -114,6 +116,7 @@ def _serialize_date(val):
 
 
 def _run_analysis(
+    session: SessionData,
     hours: float,
     min_obs: int,
     split_compounds: bool = True,
@@ -125,8 +128,6 @@ def _run_analysis(
     """
     # Re-parse if split_compounds toggle changed
     if split_compounds != session.split_compounds and session.raw_bytes is not None:
-        import tempfile
-
         with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
             tmp.write(session.raw_bytes)
             tmp_path = tmp.name
@@ -169,7 +170,7 @@ def _run_analysis(
             session.scores_by_period[period] = s
 
 
-def _build_results_json() -> dict:
+def _build_results_json(session: SessionData) -> dict:
     """Build the full results payload for the frontend."""
     import pandas as pd
 
@@ -314,23 +315,24 @@ async def index():
 
 @app.post("/upload")
 async def upload_file(
+    response: Response,
     file: UploadFile = File(...),
     hours: float = 3.0,
     min_obs: int = 3,
     split_compounds: bool = True,
     exclude_proteins: bool = True,
+    session_id: str | None = Cookie(default=None),
 ):
     """Upload an Excel file, parse it, and run analysis."""
     if not file.filename.endswith((".xlsx", ".xls")):
         raise HTTPException(400, "Only .xlsx / .xls files are supported")
 
+    sid, session = _get_or_create_session(response, session_id)
     contents = await file.read()
 
-    # Keep raw bytes for re-parse when toggling split_compounds
     session.raw_bytes = contents
     session.split_compounds = split_compounds
 
-    # Write to temp file so pandas can read it
     with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
         tmp.write(contents)
         tmp_path = tmp.name
@@ -352,28 +354,46 @@ async def upload_file(
     session.med_periods = med_periods
     session.filename = file.filename
 
-    _run_analysis(hours, min_obs, split_compounds, exclude_proteins)
-    return _build_results_json()
+    _run_analysis(session, hours, min_obs, split_compounds, exclude_proteins)
+    store.set(sid, session)
+    return _build_results_json(session)
 
 
 @app.get("/results")
-async def get_results():
+async def get_results(
+    response: Response, session_id: str | None = Cookie(default=None)
+):
     """Return current analysis results."""
-    if session.bac_df is None:
+    if not session_id:
         raise HTTPException(404, "No data loaded — upload a file first")
-    return _build_results_json()
+    session = store.get(session_id)
+    if session is None or session.bac_df is None:
+        raise HTTPException(404, "No data loaded — upload a file first")
+    return _build_results_json(session)
 
 
 @app.post("/results")
-async def recompute(params: AnalysisParams):
+async def recompute(
+    params: AnalysisParams,
+    response: Response,
+    session_id: str | None = Cookie(default=None),
+):
     """Recompute analysis with new parameters (without re-uploading)."""
-    if session.bac_df is None:
+    if not session_id:
+        raise HTTPException(404, "No data loaded — upload a file first")
+    session = store.get(session_id)
+    if session is None or session.bac_df is None:
         raise HTTPException(404, "No data loaded — upload a file first")
     session.episode_threshold = params.episode_threshold
     _run_analysis(
-        params.hours, params.min_obs, params.split_compounds, params.exclude_proteins
+        session,
+        params.hours,
+        params.min_obs,
+        params.split_compounds,
+        params.exclude_proteins,
     )
-    return _build_results_json()
+    store.set(session_id, session)
+    return _build_results_json(session)
 
 
 # ---------------------------------------------------------------------------
@@ -384,14 +404,16 @@ class PredictRequest(BaseModel):
 
 
 @app.get("/report")
-async def get_report():
+async def get_report(response: Response, session_id: str | None = Cookie(default=None)):
     """Generate a template-based analysis report."""
-    if session.bac_df is None:
+    if not session_id:
+        raise HTTPException(404, "No data loaded — upload a file first")
+    session = store.get(session_id)
+    if session is None or session.bac_df is None:
         raise HTTPException(404, "No data loaded — upload a file first")
 
-    summary = _build_results_json()["summary"]
+    summary = _build_results_json(session)["summary"]
 
-    # Convert scores_by_period dict of DataFrames to the format generate_report expects
     report = generate_report(
         session.scores_all,
         session.scores_by_period or {},
@@ -399,7 +421,6 @@ async def get_report():
         session.med_periods or {},
         summary,
     )
-    # Add combinations
     report["combinations"] = detect_combinations(
         session.lookback_df, session.bac_df, min_cooccurrence=3
     )
@@ -407,9 +428,16 @@ async def get_report():
 
 
 @app.post("/predict")
-async def predict_meal(req: PredictRequest):
+async def predict_meal(
+    req: PredictRequest,
+    response: Response,
+    session_id: str | None = Cookie(default=None),
+):
     """Predict BAC risk for a planned meal."""
-    if session.bac_df is None:
+    if not session_id:
+        raise HTTPException(404, "No data loaded — upload a file first")
+    session = store.get(session_id)
+    if session is None or session.bac_df is None:
         raise HTTPException(404, "No data loaded — upload a file first")
     if not req.ingredients:
         raise HTTPException(400, "Provide at least one ingredient")
