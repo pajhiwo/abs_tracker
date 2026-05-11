@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from core import parse_log, map_lookback, compute_lift_scores
 from ai import generate_report, predict_risk, detect_combinations
 from app.sessions import SessionData, create_store, new_session_id
+from report.pdf_export import generate_pdf
 
 app = FastAPI(title="ABS Diet Tracker", version="0.1.0")
 
@@ -290,6 +291,41 @@ def _build_results_json(session: SessionData) -> dict:
                     }
                 )
 
+    # Period lift comparison — top 10 suspects across med periods
+    period_lifts = []
+    if (
+        scores_all
+        and session.scores_by_period
+        and session.med_periods
+    ):
+        # Get top suspects from overall scores
+        overall_df = session.scores_all
+        if overall_df is not None and not overall_df.empty:
+            suspects = (
+                overall_df[
+                    (overall_df["lift"] > 1.0)
+                    & ~overall_df["low_confidence"]
+                    & ~overall_df["always_present"]
+                ]
+                .sort_values("lift", ascending=False)
+                .head(10)
+            )
+            for _, srow in suspects.iterrows():
+                ing = srow["ingredient"]
+                per_period = []
+                for period_name, period_df in session.scores_by_period.items():
+                    match = period_df[period_df["ingredient"] == ing]
+                    if not match.empty:
+                        lv = match.iloc[0]["lift"]
+                        per_period.append({
+                            "name": period_name,
+                            "lift": round(float(lv), 2) if pd.notna(lv) else None,
+                            "n": int(match.iloc[0]["n_present"]),
+                        })
+                    else:
+                        per_period.append({"name": period_name, "lift": None, "n": 0})
+                period_lifts.append({"ingredient": ing, "periods": per_period})
+
     return {
         "filename": session.filename,
         "hours": session.hours,
@@ -302,6 +338,7 @@ def _build_results_json(session: SessionData) -> dict:
         "lift_scores_by_period": scores_by_period,
         "lookback_by_reading": lookback_by_reading,
         "meal_carbs": meal_carbs,
+        "period_lifts": period_lifts,
     }
 
 
@@ -450,3 +487,78 @@ async def predict_meal(
         session.lookback_df,
         session.bac_df,
     )
+
+
+@app.get("/report/pdf")
+async def report_pdf(
+    response: Response, session_id: str | None = Cookie(default=None)
+):
+    """Generate and return a PDF analysis report."""
+    if not session_id:
+        raise HTTPException(404, "No data loaded — upload a file first")
+    session = store.get(session_id)
+    if session is None or session.bac_df is None:
+        raise HTTPException(404, "No data loaded — upload a file first")
+
+    summary = _build_results_json(session)["summary"]
+
+    report_data = generate_report(
+        session.scores_all,
+        session.scores_by_period or {},
+        session.bac_df,
+        session.med_periods or {},
+        summary,
+    )
+    report_data["combinations"] = detect_combinations(
+        session.lookback_df, session.bac_df, min_cooccurrence=3
+    )
+
+    pdf_bytes = generate_pdf(report_data, summary)
+    return Response(
+        content=bytes(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="abs_report.pdf"'},
+    )
+
+
+@app.get("/ingredient/{name}")
+async def ingredient_detail(
+    name: str,
+    response: Response,
+    session_id: str | None = Cookie(default=None),
+):
+    """Return BAC distribution split by ingredient presence."""
+    import pandas as pd
+
+    if not session_id:
+        raise HTTPException(404, "No data loaded")
+    session = store.get(session_id)
+    if session is None or session.bac_df is None:
+        raise HTTPException(404, "No data loaded")
+
+    bac_df = session.bac_df
+    lookback_df = session.lookback_df
+
+    # Find BAC indices where this ingredient appears in the lookback
+    with_indices = set()
+    if lookback_df is not None and not lookback_df.empty:
+        mask = lookback_df["ingredient"].str.lower() == name.lower()
+        with_indices = set(lookback_df.loc[mask, "bac_idx"].astype(int))
+
+    with_vals = []
+    without_vals = []
+    for idx, row in bac_df.iterrows():
+        if int(idx) in with_indices:
+            with_vals.append(float(row["promille"]))
+        else:
+            without_vals.append(float(row["promille"]))
+
+    return {
+        "ingredient": name,
+        "with": with_vals,
+        "without": without_vals,
+        "with_count": len(with_vals),
+        "without_count": len(without_vals),
+        "with_mean": round(sum(with_vals) / len(with_vals), 3) if with_vals else 0,
+        "without_mean": round(sum(without_vals) / len(without_vals), 3) if without_vals else 0,
+    }

@@ -146,6 +146,14 @@ function renderAll() {
     plannerSection.classList.remove("hidden");
     episodesSection.classList.remove("hidden");
 
+    // Show period comparison only if data is available
+    const pcSection = document.getElementById("period-comparison-section");
+    if (currentData.period_lifts && currentData.period_lifts.length > 0) {
+        pcSection.classList.remove("hidden");
+    } else {
+        pcSection.classList.add("hidden");
+    }
+
     // Reset report on new data
     reportContent.classList.add("hidden");
     reportContent.innerHTML = "";
@@ -161,6 +169,7 @@ function renderAll() {
     renderTimeline();
     populatePeriodSelect();
     renderLiftChart();
+    renderPeriodComparison();
     renderEpisodeTable();
 }
 
@@ -650,6 +659,125 @@ function renderLiftChart() {
     };
 
     Plotly.newPlot("lift-chart", traces, layout, { responsive: true });
+
+    // Make ingredient labels clickable
+    const liftChartEl = document.getElementById("lift-chart");
+    liftChartEl.on("plotly_click", function (data) {
+        if (data.points && data.points.length > 0) {
+            const ingredient = data.points[0].y;
+            showIngredientDetail(ingredient);
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Ingredient detail modal (box plot)
+// ---------------------------------------------------------------------------
+async function showIngredientDetail(name) {
+    const resp = await fetch(`/ingredient/${encodeURIComponent(name)}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+
+    const modal = document.getElementById("ingredient-modal");
+    const chart = document.getElementById("ingredient-detail-chart");
+    modal.style.display = "flex";
+
+    const traces = [
+        {
+            y: data.without,
+            name: `Without ${data.ingredient}`,
+            type: "box",
+            marker: { color: "#22c55e" },
+            boxmean: true,
+        },
+        {
+            y: data.with,
+            name: `With ${data.ingredient}`,
+            type: "box",
+            marker: { color: "#ef4444" },
+            boxmean: true,
+        },
+    ];
+
+    const boxLayout = {
+        title: { text: `BAC Distribution: ${data.ingredient}`, font: { color: "#e1e4eb", size: 14 } },
+        paper_bgcolor: "#1a1d27",
+        plot_bgcolor: "#1a1d27",
+        font: { color: "#e1e4eb", size: 11 },
+        yaxis: { title: "BAC (\u2030)", gridcolor: "#2a2d3a" },
+        xaxis: { gridcolor: "#2a2d3a" },
+        height: 380,
+        margin: { t: 50, b: 60 },
+        annotations: [{
+            x: 0.5, y: -0.18, xref: "paper", yref: "paper",
+            text: `With: n=${data.with_count}, avg=${data.with_mean.toFixed(3)}\u2030 &nbsp;|&nbsp; Without: n=${data.without_count}, avg=${data.without_mean.toFixed(3)}\u2030`,
+            showarrow: false,
+            font: { size: 10, color: "#8b8fa3" },
+        }],
+    };
+
+    Plotly.newPlot(chart, traces, boxLayout, { responsive: true });
+}
+
+// ---------------------------------------------------------------------------
+// Period comparison chart (grouped bars)
+// ---------------------------------------------------------------------------
+function renderPeriodComparison() {
+    const container = document.getElementById("period-comparison-chart");
+    if (!container) return;
+    const data = currentData.period_lifts;
+    if (!data || data.length === 0) {
+        container.innerHTML = "";
+        return;
+    }
+
+    const ingredients = data.map(d => d.ingredient);
+    // Collect all unique period names
+    const periodNames = [...new Set(data.flatMap(d => d.periods.map(p => p.name)))];
+
+    const palette = [
+        "#95a5a6", "#6366f1", "#e67e22", "#3498db", "#e74c3c",
+        "#2ecc71", "#9b59b6", "#1abc9c", "#f39c12", "#34495e",
+    ];
+
+    const traces = periodNames.map((period, i) => ({
+        name: period,
+        type: "bar",
+        x: ingredients,
+        y: data.map(d => {
+            const p = d.periods.find(pp => pp.name === period);
+            return p && p.lift != null ? p.lift : null;
+        }),
+        marker: { color: palette[i % palette.length] },
+        hovertemplate: "%{x}<br>" + period + "<br>Lift: %{y:.2f}<extra></extra>",
+    }));
+
+    const layout = {
+        barmode: "group",
+        paper_bgcolor: "#1a1d27",
+        plot_bgcolor: "#1a1d27",
+        font: { color: "#e1e4eb", size: 11 },
+        margin: { l: 50, r: 20, t: 10, b: 100 },
+        xaxis: { gridcolor: "#2a2d3a", tickangle: -35 },
+        yaxis: { gridcolor: "#2a2d3a", title: "Lift Score" },
+        legend: { orientation: "h", y: 1.12 },
+        height: 380,
+        shapes: [{
+            type: "line",
+            x0: -0.5, x1: ingredients.length - 0.5,
+            y0: 1, y1: 1,
+            line: { dash: "dash", color: "#8b8fa3", width: 1 },
+        }],
+    };
+
+    Plotly.newPlot(container, traces, layout, { responsive: true });
+
+    // Make bars clickable too
+    container.on("plotly_click", function (evtData) {
+        if (evtData.points && evtData.points.length > 0) {
+            showIngredientDetail(evtData.points[0].x);
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -846,6 +974,7 @@ generateReportBtn.addEventListener("click", async () => {
         if (!resp.ok) throw new Error("Report generation failed");
         const data = await resp.json();
         _renderReport(data);
+        document.getElementById("download-pdf-btn").style.display = "inline-block";
     } catch (e) {
         alert(e.message);
     } finally {

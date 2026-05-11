@@ -47,9 +47,9 @@ def generate_report(
     unique_ing = summary.get("unique_ingredients", 0)
 
     summary_text = (
-        f"{total} BAC readings from {date_min} to {date_max}. "
-        f"{episodes} episodes (BAC > 0). "
-        f"Mean BAC: {bac_mean:.2f}‰, Max: {bac_max:.2f}‰. "
+        f"{total} BAC readings from {date_min} to {date_max}.\n"
+        f"{episodes} episodes (BAC > 0).\n"
+        f"Avg BAC: {bac_mean:.2f} permille, Max: {bac_max:.2f} permille.\n"
         f"{unique_ing} unique ingredients tracked."
     )
 
