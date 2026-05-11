@@ -104,6 +104,7 @@
         <!-- Lift Scores Chart -->
         <section id="lift-section" class="card hidden">
             <h2>Lift Scores — Overall</h2>
+            <p class="section-hint">Click an ingredient name to see its BAC distribution</p>
             <div class="lift-controls">
                 <label for="period-select">Period:</label>
                 <select id="period-select">
@@ -115,10 +116,18 @@
             <div id="lift-chart"></div>
         </section>
 
+        <!-- Period Comparison Chart -->
+        <section id="period-comparison-section" class="card hidden">
+            <h2>📊 Lift by Medication Period</h2>
+            <p class="section-hint">Top suspect ingredients compared across medication periods</p>
+            <div id="period-comparison-chart"></div>
+        </section>
+
         <!-- Analysis Report -->
         <section id="report-section" class="card hidden">
             <h2>📋 Analysis Report</h2>
             <button id="generate-report-btn" class="btn">Generate Report</button>
+            <button id="download-pdf-btn" class="btn btn-secondary" style="display:none" onclick="window.open('/report/pdf')">📄 Download PDF</button>
             <div id="report-content" class="report-content hidden"></div>
         </section>
 
@@ -159,6 +168,15 @@
     <footer>
         <p>ABS Tracker v0.5 — For research and personal health tracking only. Not medical advice.</p>
     </footer>
+
+    <!-- Ingredient Detail Modal -->
+    <div id="ingredient-modal" class="modal-overlay" style="display:none"
+         onclick="if(event.target===this) this.style.display='none'">
+        <div class="modal-content card">
+            <button class="modal-close" onclick="document.getElementById('ingredient-modal').style.display='none'">✕</button>
+            <div id="ingredient-detail-chart"></div>
+        </div>
+    </div>
 
     <script src="/static/app.js"></script>
 </body>
