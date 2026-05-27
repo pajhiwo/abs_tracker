@@ -560,3 +560,145 @@ footer {
     text-decoration: underline;
     text-decoration-color: rgba(99, 102, 241, 0.4);
 }
+
+/* ---------------------------------------------------------- Personal ML */
+.ml-status { margin-bottom: 1rem; }
+.ml-banner {
+    padding: 0.75rem 1rem;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    font-size: 0.95rem;
+}
+.ml-banner > div { margin-top: 0.25rem; opacity: 0.9; }
+.ml-banner-info { background: #1e2a3a; border-color: #2c4060; color: #cfe0ff; }
+.ml-banner-warn { background: #3a2a1e; border-color: #604530; color: #ffd9b8; }
+.ml-banner-ok   { background: #1e3a28; border-color: #2f6043; color: #c9f0d3; }
+.ml-pill {
+    display: inline-block;
+    padding: 0.1rem 0.5rem;
+    margin-left: 0.4rem;
+    font-size: 0.75rem;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.1);
+    color: inherit;
+    vertical-align: middle;
+}
+.ml-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 0.5rem;
+    margin: 0.5rem 0 1rem;
+}
+.ml-metric {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 6px;
+    padding: 0.6rem 0.75rem;
+    text-align: center;
+}
+.ml-metric-label {
+    font-size: 0.75rem;
+    opacity: 0.7;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.ml-metric-value { font-size: 1.2rem; font-weight: 600; margin-top: 0.2rem; }
+.ml-effects-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 1rem;
+    font-size: 0.9rem;
+}
+.ml-effects-table th, .ml-effects-table td {
+    padding: 0.4rem 0.6rem;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    text-align: left;
+}
+.ml-effects-table th { font-weight: 600; opacity: 0.85; }
+.ml-footnote { margin-top: 0.5rem; font-size: 0.8rem; opacity: 0.65; }
+/* ---------------------------------------------------------- Personal ML */
+.ml-status { margin-bottom: 1rem; }
+.ml-banner {
+    padding: 0.75rem 1rem;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    font-size: 0.95rem;
+}
+.ml-banner > div { margin-top: 0.25rem; opacity: 0.9; }
+.ml-banner-info { background: #1e2a3a; border-color: #2c4060; color: #cfe0ff; }
+.ml-banner-warn { background: #3a2a1e; border-color: #604530; color: #ffd9b8; }
+.ml-banner-ok   { background: #1e3a28; border-color: #2f6043; color: #c9f0d3; }
+.ml-pill {
+    display: inline-block;
+    padding: 0.1rem 0.5rem;
+    margin-left: 0.4rem;
+    font-size: 0.75rem;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.1);
+    vertical-align: middle;
+}
+.ml-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 0.5rem;
+    margin: 0.5rem 0 1rem;
+}
+.ml-metric {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 6px;
+    padding: 0.6rem 0.75rem;
+    text-align: center;
+}
+.ml-metric-label { font-size: 0.75rem; opacity: 0.7; text-transform: uppercase; letter-spacing: 0.04em; }
+.ml-metric-value { font-size: 1.2rem; font-weight: 600; margin-top: 0.2rem; }
+.ml-effects-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 1rem;
+    font-size: 0.9rem;
+}
+.ml-effects-table th, .ml-effects-table td {
+    padding: 0.4rem 0.6rem;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    text-align: left;
+}
+.ml-effects-table th { font-weight: 600; opacity: 0.85; }
+.ml-footnote { margin-top: 0.5rem; font-size: 0.8rem; opacity: 0.65; }
+.ml-metric-sub { font-size: 0.7rem; opacity: 0.55; margin-top: 0.1rem; }
+.ml-metric[title] { cursor: help; }
+.ml-howto {
+    margin: 0 0 1rem;
+    padding: 0.6rem 0.8rem;
+    background: rgba(255,255,255,0.03);
+    border-left: 3px solid rgba(255,255,255,0.15);
+    border-radius: 4px;
+    font-size: 0.85rem;
+    opacity: 0.85;
+}
+
+/* ML chart intro/legend */
+.ml-chart-intro {
+    margin: 1rem 0 0.5rem;
+    padding: 0.75rem 1rem;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 6px;
+}
+.ml-chart-title { margin: 0 0 0.4rem; font-size: 1rem; }
+.ml-chart-intro p { margin: 0.3rem 0; font-size: 0.88rem; line-height: 1.5; opacity: 0.9; }
+.ml-chart-example { font-size: 0.85rem; opacity: 0.85; }
+.ml-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin: 0.5rem 0;
+    font-size: 0.82rem;
+}
+.ml-legend-item { display: inline-flex; align-items: center; gap: 0.35rem; }
+.ml-swatch {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+}
