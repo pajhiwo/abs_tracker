@@ -16,6 +16,8 @@ from core import parse_log, map_lookback, compute_lift_scores
 from ai import generate_report, predict_risk, detect_combinations
 from app.sessions import SessionData, create_store, new_session_id
 from report.pdf_export import generate_pdf
+from ml.features import extract_features
+from ml.train import train_personal_model
 
 app = FastAPI(title="ABS Diet Tracker", version="0.1.0")
 
@@ -326,6 +328,30 @@ def _build_results_json(session: SessionData) -> dict:
                         per_period.append({"name": period_name, "lift": None, "n": 0})
                 period_lifts.append({"ingredient": ing, "periods": per_period})
 
+    # Personal ML model (Stage 8a/8b) — multi-user-aware
+    ml_block: dict | None = None
+    if bac_df is not None and not bac_df.empty:
+        try:
+            feats = extract_features(
+                meals_df if meals_df is not None else pd.DataFrame(),
+                bac_df,
+                session.med_periods or {},
+                user_id=session.filename or "local",
+                lookback_hours=float(session.hours) if session.hours else 24.0,
+                min_ingredient_count=max(int(session.min_obs or 3), 3),
+            )
+            ml_block = train_personal_model(
+                feats,
+                min_readings=80,
+                bootstrap=True,
+                n_bootstrap=50,
+            )
+            if ml_block is not None:
+                ml_block["dropped_ingredients"] = feats.get("dropped_ingredients", [])
+                ml_block["lookback_hours"] = float(session.hours) if session.hours else 24.0
+        except Exception as e:
+            ml_block = {"status": "error", "message": str(e)}
+
     return {
         "filename": session.filename,
         "hours": session.hours,
@@ -339,6 +365,7 @@ def _build_results_json(session: SessionData) -> dict:
         "lookback_by_reading": lookback_by_reading,
         "meal_carbs": meal_carbs,
         "period_lifts": period_lifts,
+        "ml": ml_block,
     }
 
 

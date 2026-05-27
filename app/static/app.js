@@ -170,6 +170,7 @@ function renderAll() {
     populatePeriodSelect();
     renderLiftChart();
     renderPeriodComparison();
+    renderMlModel();
     renderEpisodeTable();
 }
 
@@ -803,6 +804,273 @@ function _ingredientColor(score) {
     if (score.low_confidence) return "#f59e0b"; // low confidence → amber
     if (score.lift != null && score.lift > 1) return "#ef4444"; // suspect → red
     return "#22c55e";                         // safe → green
+}
+
+// ---------------------------------------------------------------------------
+// Personal ML model
+// ---------------------------------------------------------------------------
+
+// Convert a raw ML feature name into a label a non-ML person can read.
+//   ing_rice                  -> "Rice"
+//   on_rifaximin              -> "On Rifaximin"
+//   days_on_rifaximin         -> "Days on Rifaximin"
+//   total_carbs_g             -> "Total carbs (g)"
+//   total_sugars_g            -> "Total sugars (g)"
+//   total_quantity_g          -> "Meal size (g, total)"
+//   n_ingredients             -> "Number of ingredients"
+//   hours_since_last_meal     -> "Hours since last meal"
+//   hour_sin / hour_cos       -> "Time of day"
+function prettyFeature(name) {
+    if (!name) return name;
+    const titleCase = s => s.split(/[_ ]/).filter(Boolean)
+        .map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+
+    if (name === "total_carbs_g")        return "Total carbs (g)";
+    if (name === "total_sugars_g")       return "Total sugars (g)";
+    if (name === "total_quantity_g")     return "Meal size (g, total)";
+    if (name === "n_ingredients")        return "Number of ingredients";
+    if (name === "hours_since_last_meal") return "Hours since last meal";
+    if (name === "hour_sin" || name === "hour_cos") return "Time of day (cyclic)";
+
+    if (name.startsWith("days_on_")) return "Days on " + titleCase(name.slice(8));
+    if (name.startsWith("on_"))      return "On "      + titleCase(name.slice(3));
+    if (name.startsWith("ing_"))     return titleCase(name.slice(4));
+
+    return titleCase(name);
+}
+
+function renderMlModel() {
+    const section = document.getElementById("ml-section");
+    const statusEl = document.getElementById("ml-status");
+    const metricsEl = document.getElementById("ml-metrics");
+    const chartDiv = document.getElementById("ml-effects-chart");
+    const tableWrap = document.getElementById("ml-effects-table-wrap");
+
+    const ml = currentData && currentData.ml;
+    if (!ml) {
+        section.classList.add("hidden");
+        return;
+    }
+    section.classList.remove("hidden");
+
+    statusEl.innerHTML = "";
+    metricsEl.innerHTML = "";
+    chartDiv.innerHTML = "";
+    tableWrap.innerHTML = "";
+    // Remove any previously-injected sibling blocks (intro caption, how-to)
+    section.querySelectorAll(".ml-chart-intro, .ml-howto").forEach(el => el.remove());
+
+    if (ml.status === "insufficient_data") {
+        statusEl.innerHTML = `
+            <div class="ml-banner ml-banner-info">
+                Need at least <strong>${ml.needed}</strong> BAC readings to train
+                a personal model — you currently have <strong>${ml.n_readings}</strong>.
+                Keep logging.
+            </div>`;
+        return;
+    }
+    if (ml.status === "error") {
+        statusEl.innerHTML = `<div class="ml-banner ml-banner-warn">ML error: ${ml.message}</div>`;
+        return;
+    }
+
+    const verdictClass = {
+        no_signal: "ml-banner-warn",
+        modest: "ml-banner-info",
+        meaningful: "ml-banner-ok",
+        strong: "ml-banner-ok",
+        insufficient_cv_folds: "ml-banner-info",
+    }[ml.verdict] || "ml-banner-info";
+
+    const verdictLabel = {
+        no_signal: "Weak model",
+        modest: "Modest signal",
+        meaningful: "Useful signal",
+        strong: "Strong signal",
+        insufficient_cv_folds: "Not enough data spread",
+    }[ml.verdict] || ml.verdict;
+
+    const prelim = ml.preliminary
+        ? ` <span class="ml-pill" title="Based on fewer than 200 readings — treat results as preliminary.">preliminary (${ml.n_readings} readings)</span>`
+        : "";
+    statusEl.innerHTML = `
+        <div class="ml-banner ${verdictClass}">
+            <strong>${verdictLabel}</strong>${prelim}
+            <div>${ml.verdict_message}</div>
+        </div>`;
+
+    const improv = ml.improvement_pct != null
+        ? `${ml.improvement_pct.toFixed(1)}%`
+        : "–";
+    const mae = (v) => v != null ? v.toFixed(3) : "–";
+    // MAE = mean absolute error: average distance between predicted and actual
+    // BAC, in permille. Lower is better. We show user-friendly labels and put
+    // the technical name in a tooltip.
+    metricsEl.innerHTML = `
+        <div class="ml-metric">
+            <div class="ml-metric-label">BAC readings used</div>
+            <div class="ml-metric-value">${ml.n_readings}</div>
+        </div>
+        <div class="ml-metric" title="Always predicts your average BAC. The baseline to beat.">
+            <div class="ml-metric-label">Guess-the-average error</div>
+            <div class="ml-metric-value">±${mae(ml.baseline_mae)}</div>
+            <div class="ml-metric-sub">permille</div>
+        </div>
+        <div class="ml-metric" title="Linear model using all features (Ridge regression).">
+            <div class="ml-metric-label">Simple model error</div>
+            <div class="ml-metric-value">±${mae(ml.ridge_mae)}</div>
+            <div class="ml-metric-sub">permille</div>
+        </div>
+        <div class="ml-metric" title="Sparse model that picks only the most useful triggers (LASSO).">
+            <div class="ml-metric-label">Personal model error</div>
+            <div class="ml-metric-value">±${mae(ml.lasso_mae)}</div>
+            <div class="ml-metric-sub">permille</div>
+        </div>
+        <div class="ml-metric" title="How much better the personal model is than just guessing the average.">
+            <div class="ml-metric-label">Better than guessing</div>
+            <div class="ml-metric-value">${improv}</div>
+        </div>
+        <div class="ml-metric" title="Number of foods/medications/timing features the model kept.">
+            <div class="ml-metric-label">Triggers identified</div>
+            <div class="ml-metric-value">${ml.n_selected_features}</div>
+        </div>
+    `;
+
+    // How-to-read hint
+    metricsEl.insertAdjacentHTML("afterend", `
+        <p class="ml-howto">
+            <strong>How to read this:</strong>
+            ±${mae(ml.baseline_mae)} is the average error in permille if we
+            simply predicted your <em>average</em> BAC for every reading.
+            The personal model's error of ±${mae(ml.lasso_mae)} means its
+            predictions are typically that far from your actual BAC.
+            Lower is better. The "${improv}" figure is how much the model
+            beats blindly guessing the average.
+        </p>`);
+
+
+    // Effects chart — top 15 by absolute coefficient, non-zero.
+    // Hide the time-of-day encoding features (hour_sin/hour_cos): they are
+    // not individually interpretable and the user can't act on them.
+    const HIDDEN_FROM_CHART = new Set(["hour_sin", "hour_cos"]);
+    const timeOfDayUsed = (ml.effects || []).some(
+        e => HIDDEN_FROM_CHART.has(e.feature) && e.coef !== 0
+    );
+    const effects = (ml.effects || [])
+        .filter(e => e.coef !== 0 && !HIDDEN_FROM_CHART.has(e.feature))
+        .slice(0, 15);
+
+    if (effects.length === 0) {
+        chartDiv.innerHTML = `<p class="muted">The model didn't find any reliable triggers in your data yet. Keep logging.</p>`;
+    } else {
+        const labels = effects.map(e => prettyFeature(e.feature));
+        const coefs = effects.map(e => e.coef);
+        const errLow = effects.map(e => e.ci_low != null ? e.coef - e.ci_low : 0);
+        const errHigh = effects.map(e => e.ci_high != null ? e.ci_high - e.coef : 0);
+        const colors = effects.map(e =>
+            !e.significant ? "#8b8fa3" : (e.coef > 0 ? "#ef4444" : "#22c55e")
+        );
+
+        // Intro caption above the chart — explains what to look at first.
+        const topEffect = effects[0];
+        const topName = prettyFeature(topEffect.feature);
+        const topDir = topEffect.coef > 0 ? "raises" : "lowers";
+        chartDiv.insertAdjacentHTML("beforebegin", `
+            <div class="ml-chart-intro">
+                <h3 class="ml-chart-title">What affects your BAC the most?</h3>
+                <p>
+                    Each bar is one thing the model looked at (a food, medication,
+                    or meal-timing feature). Bars to the <strong>right</strong> mean
+                    that thing <strong>raises</strong> your BAC; bars to the
+                    <strong>left</strong> mean it <strong>lowers</strong> it.
+                    The longer the bar, the bigger the effect.
+                    The thin horizontal line on each bar shows how uncertain that
+                    estimate is — if the line crosses zero, the effect is not
+                    reliable yet.
+                </p>
+                <div class="ml-legend">
+                    <span class="ml-legend-item"><span class="ml-swatch" style="background:#ef4444"></span>Raises BAC (reliable)</span>
+                    <span class="ml-legend-item"><span class="ml-swatch" style="background:#22c55e"></span>Lowers BAC (reliable)</span>
+                    <span class="ml-legend-item"><span class="ml-swatch" style="background:#8b8fa3"></span>Effect not yet reliable</span>
+                </div>
+                <p class="ml-chart-example">
+                    <strong>Example:</strong> the top bar is
+                    <em>${topName}</em>, which ${topDir} your BAC the most in this dataset.
+                </p>
+            </div>`);
+
+        const trace = {
+            type: "bar",
+            orientation: "h",
+            x: coefs,
+            y: labels,
+            error_x: {
+                type: "data",
+                symmetric: false,
+                array: errHigh,
+                arrayminus: errLow,
+                color: "#666",
+                thickness: 1,
+            },
+            marker: { color: colors },
+            hovertemplate: "<b>%{y}</b><br>Effect: %{x:+.3f} permille<extra></extra>",
+        };
+
+        const layout = {
+            margin: { l: 200, r: 30, t: 30, b: 60 },
+            height: Math.max(260, effects.length * 32 + 100),
+            xaxis: {
+                title: "← Lowers BAC          Effect on BAC (permille)          Raises BAC →",
+                zeroline: true,
+                zerolinecolor: "#666",
+                zerolinewidth: 2,
+            },
+            yaxis: { autorange: "reversed", tickfont: { size: 12 } },
+            paper_bgcolor: "transparent",
+            plot_bgcolor: "transparent",
+            shapes: [{
+                // dashed annotation line at x=0 to reinforce "no effect"
+                type: "line", x0: 0, x1: 0, yref: "paper", y0: 0, y1: 1,
+                line: { color: "#888", width: 1, dash: "dot" },
+            }],
+        };
+
+        Plotly.newPlot(chartDiv, [trace], layout, { displayModeBar: false, responsive: true });
+    }
+
+    // Effects table (per-unit values)
+    if (effects.length > 0) {
+        const rows = effects.map(e => {
+            const sig = e.significant ? "✓" : "";
+            const ciRaw = (e.ci_low_raw != null && e.ci_high_raw != null)
+                ? `[${e.ci_low_raw.toFixed(3)}, ${e.ci_high_raw.toFixed(3)}]`
+                : "–";
+            return `<tr>
+                <td>${prettyFeature(e.feature)}</td>
+                <td>${e.coef_raw.toFixed(3)}</td>
+                <td>${ciRaw}</td>
+                <td>${sig}</td>
+            </tr>`;
+        }).join("");
+        tableWrap.innerHTML = `
+            <table class="ml-effects-table">
+                <thead>
+                    <tr>
+                        <th>Trigger</th>
+                        <th title="How much BAC changes per one unit of this feature (e.g. per gram of carbs, or when this ingredient is present).">Effect on BAC</th>
+                        <th title="95% confidence interval: where the true effect likely lies.">Uncertainty range</th>
+                        <th title="\u2713 means the effect is statistically reliable (range excludes zero).">Reliable?</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+            <p class="ml-footnote">
+                <strong>Positive</strong> values raise your BAC, <strong>negative</strong> values lower it.
+                A trigger is marked reliable (✓) when the uncertainty range
+                does not cross zero. Lookback window: ${ml.lookback_hours}h.
+                ${timeOfDayUsed ? "The model also adjusted for <em>time of day</em> in the background (not shown — it can't be acted on)." : ""}
+            </p>`;
+    }
 }
 
 function _sortReadings(readings) {
