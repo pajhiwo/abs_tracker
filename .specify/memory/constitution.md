@@ -1,22 +1,35 @@
 <!--
 Sync Impact Report
 ==================
-Version change: (none) -> 1.0.0
-Bump rationale: Initial ratification of the project constitution.
+Version change: 1.0.0 -> 1.1.0
+Bump rationale: MINOR -- one principle added and two materially expanded. No
+principle was removed or redefined in a backward-incompatible way.
 
-Principles defined:
-  I.   Advisory, Never Diagnostic
+Principles added:
+  VI.  Anonymous Use Is a First-Class Path
+
+Principles modified:
   II.  Deterministic Core, Optional Intelligence
-  III. Honest Statistics
+       Added priority ordering (normalisation before narrative reporting),
+       a persistence/inspectability requirement for AI-derived mappings, and
+       the rule that the unit of work is one unseen source string.
   IV.  Health Data Is Special Category
+       Replaced the aspirational retention sentence with the actual anonymous
+       retention behaviour (SESSION_TTL, memory/Redis, never disk) plus a
+       disclosure obligation, and scoped cross-user pooling out with an
+       explicit opt-in path for introducing it later.
+
+Principles unchanged:
+  I.   Advisory, Never Diagnostic
+  III. Honest Statistics
   V.   Evidence-Backed Changes
 
-Sections added:
+Sections modified:
   - Security, AI Integration & Scale Constraints
-  - Development Workflow & Quality Gates
-  - Governance
+    Added a derived-data caching clause limiting AI-derived mappings to
+    product and ingredient name fields.
 
-Sections removed: none (initial version).
+Sections removed: none.
 
 Dependent templates and skills read this constitution at runtime; none were
 modified by this update.
@@ -48,7 +61,17 @@ additive: each MUST declare a deterministic fallback and MUST degrade to it on e
 missing credentials, or exhausted quota. A failure in an optional intelligence layer MUST NOT
 block upload, parsing, lift scores, or report generation.
 
-Rationale: someone checking a reading mid-episode needs an answer, not an outage.
+Intelligence features are prioritised by their effect on the underlying statistics, not by how
+impressive the output reads. Ingredient normalisation and fermentable-carbohydrate categorisation
+come first, because collapsing name variants and deriving dense category features improves every
+lift score already computed; narrative report generation comes second. AI-derived mappings
+(canonical ingredient name, category assignment) MUST be persisted, keyed by the exact source
+string, and MUST be inspectable and correctable by a human. The unit of work is one previously
+unseen ingredient string, never one analysis request. The raw source string MUST remain the
+fallback whenever a mapping is absent.
+
+Rationale: someone checking a reading mid-episode needs an answer, not an outage -- and a
+fabricated narrative is more dangerous than a plain table.
 
 ### III. Honest Statistics
 
@@ -65,15 +88,25 @@ Rationale: a confident-looking number derived from five readings is worse than n
 ### IV. Health Data Is Special Category
 
 Diet logs, breath-alcohol readings, and medication histories are special-category personal data
-under GDPR Article 9. Collection MUST be limited to what the analysis requires. Every user MUST
-be able to export and permanently delete all of their data. Retention periods MUST be documented
-and enforced in code. Personal data MUST NOT be sent to any third-party service without explicit,
-feature-specific consent and prior redaction of free-text fields. Real user logs MUST NOT be
+under GDPR Article 9. Collection MUST be limited to what the analysis requires.
+
+Retention MUST be stated accurately wherever a user uploads data. Anonymous use holds the
+uploaded workbook and its parsed derivatives in process memory, or in Redis when configured, for
+at most the configured session lifetime (`SESSION_TTL`, 30 minutes by default); nothing is written
+to disk, and the interface MUST disclose this rather than claiming that no data is retained. If an
+authenticated storage path is added, users MUST be able to export and permanently delete all of
+their data, and retention MUST be documented and enforced in code.
+
+Personal data MUST NOT be sent to any third-party service without explicit, feature-specific
+consent and prior redaction of free-text fields. Pooling or aggregating data across users is out
+of scope; introducing it MUST require its own specification, explicit opt-in consent, and
+documented anonymisation, and it MUST NOT be enabled by default. Real user logs MUST NOT be
 committed to the repository; `example/example_log.xlsx` is the only workbook in version control
 and contains no real patient data.
 
 Rationale: this is the most sensitive category the regulation defines, held on behalf of people
-with a rare and frequently disbelieved condition.
+with a rare and frequently disbelieved condition. A promise that overstates privacy is worse than
+an accurate one.
 
 ### V. Evidence-Backed Changes
 
@@ -86,6 +119,17 @@ work is complete MUST be backed by observed command output.
 Rationale: the parser silently shapes every downstream result, so a regression yields plausible
 wrong numbers rather than a visible error.
 
+### VI. Anonymous Use Is a First-Class Path
+
+Uploading a workbook and receiving a full analysis MUST work without an account, and MUST
+continue to work for every feature that reaches the interface. Authentication and persistence, if
+added, are strictly opt-in conveniences: no analysis capability, report, or export may be gated
+behind creating an account. Features MUST NOT assume a durable user identity.
+
+Rationale: users of this application are disclosing a stigmatised medical condition. Requiring
+them to create an account before they can learn anything would exclude exactly the people the
+tool exists to help.
+
 ## Security, AI Integration & Scale Constraints
 
 Untrusted input: meal comments, medication notes, and product names all originate in user-supplied
@@ -95,6 +139,10 @@ control flow, shell execution, file writes, or database mutations.
 Cost and egress control: every external AI call MUST enforce a per-user rate and spend cap, a
 timeout, and redaction of free-text fields before egress. Credentials MUST be read from the
 environment; secrets MUST NOT appear in the repository, in logs, or in error responses.
+
+Derived-data caching: AI-derived mappings MUST be limited to product and ingredient name fields.
+Comments and medication notes MUST NOT be cached or shared across users, because free text can
+carry personal narrative.
 
 Request-path discipline: analysis endpoints serve concurrent users. Model training and Excel
 parsing MUST NOT run synchronously inside request handlers, and MUST NOT be recomputed per
@@ -124,4 +172,4 @@ for clarifications and wording. Every pull request MUST verify compliance with t
 above. Deviations MUST be justified in the pull request description, and a deviation that cannot
 be justified MUST block the merge. Added complexity MUST be justified against Principle II.
 
-**Version**: 1.0.0 | **Ratified**: 2026-08-12 | **Last Amended**: 2026-08-12
+**Version**: 1.1.0 | **Ratified**: 2026-08-12 | **Last Amended**: 2026-08-12
