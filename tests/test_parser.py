@@ -290,27 +290,119 @@ class TestParseLogMultiSheet:
 
 
 # ---------------------------------------------------------------------------
-# Test with real data files (if present)
+# Integration tests — the example workbook shipped with the app
 # ---------------------------------------------------------------------------
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+EXAMPLE_LOG = _REPO_ROOT / "example" / "example_log.xlsx"
+
+
+class TestParseExampleLog:
+    """Parse `example/example_log.xlsx`, the workbook offered on the main page.
+
+    The synthetic fixtures above are clean by construction; this file is not.
+    Its Meals sheet interleaves daily-total and meal-header rows (which carry
+    quantities and calories but no product name) with real ingredient rows,
+    leaves nutrient cells blank, and pads every sheet with ~1300 empty rows.
+
+    Counts below describe the workbook as committed — update them if the
+    example data is regenerated.
+    """
+
+    @pytest.fixture(scope="class")
+    def parsed(self):
+        return parse_log(EXAMPLE_LOG)
+
+    def test_file_is_committed(self):
+        assert EXAMPLE_LOG.exists(), f"missing example workbook: {EXAMPLE_LOG}"
+
+    def test_expected_columns(self, parsed):
+        meals_df, bac_df, med_periods = parsed
+        assert "ingredient" in meals_df.columns
+        assert "bac_datetime" in bac_df.columns
+        assert "active_medications" in bac_df.columns
+        assert isinstance(med_periods, dict)
+
+    def test_row_counts(self, parsed):
+        # 15 ingredient rows in the sheet, 16 after the one compound dish splits.
+        meals_df, bac_df, _ = parsed
+        assert len(meals_df) == 16
+        assert len(bac_df) == 5
+        assert meals_df["ingredient"].nunique() == 9
+
+    def test_aggregate_rows_are_not_ingredients(self, parsed):
+        meals_df, _, _ = parsed
+        assert meals_df["ingredient"].notna().all()
+        assert (meals_df["ingredient"].str.strip() != "").all()
+        assert set(meals_df["meal"].unique()) == {"Breakfast", "Lunch", "Dinner"}
+
+    def test_padding_rows_are_skipped(self, parsed):
+        meals_df, bac_df, _ = parsed
+        assert meals_df["meal_datetime"].notna().all()
+        assert bac_df["bac_datetime"].notna().all()
+        assert bac_df["promille"].notna().all()
+
+    def test_covers_three_days(self, parsed):
+        _, bac_df, _ = parsed
+        assert bac_df["date"].dt.date.nunique() == 3
+
+    def test_bac_sorted_by_datetime(self, parsed):
+        _, bac_df, _ = parsed
+        datetimes = bac_df["bac_datetime"].tolist()
+        assert datetimes == sorted(datetimes)
+
+    def test_medication_periods(self, parsed):
+        _, _, med_periods = parsed
+        assert set(med_periods) == {"Activated Charcoal", "Rifaximin"}
+        charcoal = med_periods["Activated Charcoal"][0]
+        assert charcoal["start"] == datetime.date(2026, 3, 22)
+        assert charcoal["stop"] == datetime.date(2026, 3, 23)
+
+    def test_active_medications_follow_periods(self, parsed):
+        """Charcoal stops on the 23rd, so the 24th should list Rifaximin only."""
+        _, bac_df, _ = parsed
+        per_date = bac_df.groupby(bac_df["date"].dt.date)["active_medications"].unique()
+        assert list(per_date[datetime.date(2026, 3, 23)]) == [
+            "Activated Charcoal, Rifaximin"
+        ]
+        assert list(per_date[datetime.date(2026, 3, 24)]) == ["Rifaximin"]
+
+    def test_comment_preserved(self, parsed):
+        _, bac_df, _ = parsed
+        assert "problem talking" in bac_df["comment"].tolist()
+
+    def test_no_episodes_below_threshold(self, parsed):
+        _, bac_df, _ = parsed
+        assert bac_df["promille"].max() == 0.8
+        assert bac_df["episode"].sum() == 0
+
+    def test_compound_dish_is_split(self, parsed):
+        """'Broccoli & chicken soup' is the only compound row in the workbook."""
+        meals_df, _, _ = parsed
+        ingredients = set(meals_df["ingredient"])
+        assert {"Broccoli", "Chicken"} <= ingredients
+        assert "Broccoli & chicken soup" not in ingredients
+
+    def test_compound_dish_kept_whole_when_splitting_disabled(self):
+        meals_df, bac_df, _ = parse_log(EXAMPLE_LOG, split_compounds=False)
+        ingredients = set(meals_df["ingredient"])
+        assert "Broccoli & chicken soup" in ingredients
+        assert not {"Broccoli", "Chicken"} & ingredients
+        assert len(meals_df) == 15
+        assert len(bac_df) == 5
+
+
+# ---------------------------------------------------------------------------
+# Integration tests — private legacy log (skipped unless present)
+# ---------------------------------------------------------------------------
+LEGACY_LOG = _REPO_ROOT / "data" / "jo_log_old.xlsx"
+
+
 class TestRealDataFiles:
     @pytest.mark.skipif(
-        not Path("data/jo_log_new.xlsx").exists(),
-        reason="Real data file not available",
-    )
-    def test_parse_real_multi_sheet(self):
-        meals_df, bac_df, med_periods = parse_log("data/jo_log_new.xlsx")
-        assert not meals_df.empty
-        assert not bac_df.empty
-        assert isinstance(med_periods, dict)
-        assert "bac_datetime" in bac_df.columns
-        assert "ingredient" in meals_df.columns
-        assert "active_medications" in bac_df.columns
-
-    @pytest.mark.skipif(
-        not Path("data/jo_log_old.xlsx").exists(),
-        reason="Real data file not available",
+        not LEGACY_LOG.exists(),
+        reason="Legacy real data file not available",
     )
     def test_parse_real_legacy(self):
-        meals_df, bac_df, med_periods = parse_log("data/jo_log_old.xlsx")
+        meals_df, bac_df, _ = parse_log(LEGACY_LOG)
         assert not meals_df.empty
         assert not bac_df.empty

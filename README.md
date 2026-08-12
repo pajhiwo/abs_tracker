@@ -4,29 +4,39 @@ Auto-Brewery Syndrome — Diet & BAC Correlation Analysis
 
 ## Setup
 
+Dependencies are managed with [uv](https://docs.astral.sh/uv/). Install it once
+(`brew install uv`, or see the uv docs), then:
+
 ```bash
 cd abs_tracker
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+uv sync                       # creates .venv, fetches Python 3.14 + dependencies
+uv sync --extra redis         # optional: adds the Redis session backend
 ```
+
+`uv sync` also installs the `dev` dependency group (pytest). Use
+`uv sync --no-dev` for a runtime-only install.
 
 ## CLI Usage
 
 ```bash
-python abs_tracker.py data/jo_log.xlsx              # default 3h look-back
-python abs_tracker.py data/jo_log.xlsx --hours 5    # custom look-back window
-python abs_tracker.py --test                        # run edge-case assertions
+uv run abs_tracker.py data/jo_log.xlsx              # default 3h look-back
+uv run abs_tracker.py data/jo_log.xlsx --hours 5    # custom look-back window
+uv run abs_tracker.py --test                        # run edge-case assertions
 ```
 
 Output CSVs are saved to `output/`.
+
+## Tests
+
+```bash
+uv run pytest
+```
 
 ## Web UI
 
 Start:
 ```bash
-source .venv/bin/activate
-uvicorn app.main:app --reload --port 8000
+uv run uvicorn app.main:app --reload --port 8000
 ```
 
 Open http://127.0.0.1:8000 in your browser, then upload your Excel file.

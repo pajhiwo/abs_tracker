@@ -2,8 +2,8 @@ services:
   - type: web
     name: abs-tracker
     runtime: python
-    buildCommand: pip install poetry && poetry install --only main
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    buildCommand: pip install uv && uv sync --locked --no-dev
+    startCommand: uv run --no-sync uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
         value: "3.14"

@@ -8,3 +8,6 @@ output/
 data/
 .git/
 .gitignore
+.specify/
+.cursor/
+.pytest_cache/
