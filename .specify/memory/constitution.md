@@ -1,35 +1,71 @@
 <!--
 Sync Impact Report
 ==================
-Version change: 1.0.0 -> 1.1.0
-Bump rationale: MINOR -- one principle added and two materially expanded. No
-principle was removed or redefined in a backward-incompatible way.
+Version change: 1.1.0 -> 2.0.0
+Bump rationale: MAJOR, on the withdrawal of a permission -- not on the code
+deletion. Under v1.1.0 a plan proposing Redis for session state passed the
+Principle IV gate; under this version the same plan fails it. A rule that
+previously permitted something and now forbids it is a backward-incompatible
+redefinition, which is what Governance keys MAJOR to. The RedisStore removal is
+the consequence of that change and the evidence for it, not the reason for it;
+an earlier draft of this report argued from the code, which was a category
+error. The other half of the amendment is a relaxation -- session-scoped local
+disk is now permitted -- which alone would have been MINOR. The stricter governs.
 
-Principles added:
-  VI.  Anonymous Use Is a First-Class Path
+On the v1.1.0 precedent: v1.1.0 rewrote this same retention paragraph, and in
+doing so introduced the disk prohibition, while asserting that "no principle was
+removed or redefined in a backward-incompatible way" and bumping MINOR. By the
+standard applied here that bump was too low, because introducing a prohibition
+narrows what the principle permits exactly as withdrawing one does. The history
+is left as it was recorded rather than rewritten; it is noted here so the earlier
+bump is not read as precedent for treating restrictions as MINOR.
+
+Origin: raised during planning of specs/001-concurrent-analysis, where the
+previous wording was found to be unachievable rather than merely aspirational.
 
 Principles modified:
-  II.  Deterministic Core, Optional Intelligence
-       Added priority ordering (normalisation before narrative reporting),
-       a persistence/inspectability requirement for AI-derived mappings, and
-       the rule that the unit of work is one unseen source string.
   IV.  Health Data Is Special Category
-       Replaced the aspirational retention sentence with the actual anonymous
-       retention behaviour (SESSION_TTL, memory/Redis, never disk) plus a
-       disclosure obligation, and scoped cross-user pooling out with an
-       explicit opt-in path for introducing it later.
+       Retention paragraph rewritten. The absolute claim that "nothing is
+       written to disk" is withdrawn on two grounds. First, it was false as
+       written: the web framework spools uploads above ~1 MiB to a temporary
+       file before any application code runs, so every year-scale upload
+       already touched disk. Second, the same sentence permitted Redis, which
+       persists to disk by default, so the clause contradicted itself.
+
+       Replaced with bounded, verifiable obligations: session-scoped local
+       disk is permitted; data MUST be deleted at session end; a startup sweep
+       MUST remove data orphaned by unclean shutdown; nothing session-scoped
+       may reach a backup, snapshot, or log; and deletion is described as
+       unlinking rather than claiming erasure the filesystem cannot guarantee.
+
+       Redis removed as a sanctioned location. It was never installable in
+       deployment and had no test coverage, so it advertised a capability that
+       did not work.
 
 Principles unchanged:
   I.   Advisory, Never Diagnostic
+  II.  Deterministic Core, Optional Intelligence
   III. Honest Statistics
   V.   Evidence-Backed Changes
+  VI.  Anonymous Use Is a First-Class Path
 
 Sections modified:
   - Security, AI Integration & Scale Constraints
-    Added a derived-data caching clause limiting AI-derived mappings to
-    product and ingredient name fields.
+    "Identity and durability" clarified so that session-scoped disk is not
+    mistaken for the durable storage that cross-visit retention requires.
 
 Sections removed: none.
+
+Required follow-up in code (tracked in specs/001-concurrent-analysis):
+  - Remove RedisStore and the `redis` optional dependency. DONE with this
+    amendment, since leaving them would leave the repo non-compliant.
+  - Session-scoped disk, its TTL sweeper, and its startup sweep are NOT yet
+    implemented. This amendment permits them; it does not assert they exist.
+  - The interface disclosure has been brought in line with this amendment and
+    with actual behaviour (FR-024): it states the retention window as an upper
+    bound, admits the temporary file the upload path writes, and no longer
+    claims nothing is written to disk. It describes memory-only retention, so it
+    MUST be revised again when session-scoped disk actually ships.
 
 Dependent templates and skills read this constitution at runtime; none were
 modified by this update.
@@ -90,12 +126,23 @@ Rationale: a confident-looking number derived from five readings is worse than n
 Diet logs, breath-alcohol readings, and medication histories are special-category personal data
 under GDPR Article 9. Collection MUST be limited to what the analysis requires.
 
-Retention MUST be stated accurately wherever a user uploads data. Anonymous use holds the
-uploaded workbook and its parsed derivatives in process memory, or in Redis when configured, for
-at most the configured session lifetime (`SESSION_TTL`, 30 minutes by default); nothing is written
-to disk, and the interface MUST disclose this rather than claiming that no data is retained. If an
-authenticated storage path is added, users MUST be able to export and permanently delete all of
-their data, and retention MUST be documented and enforced in code.
+Retention MUST be stated accurately wherever a user uploads data, and the stated retention MUST
+be one the implementation can actually honour. Anonymous use holds the uploaded workbook and its
+parsed derivatives in process memory and, where it materially simplifies the architecture, in a
+session-scoped working area on local disk, for at most the configured session lifetime
+(`SESSION_TTL`, 30 minutes by default).
+
+Session-scoped data MUST be deleted when the session ends or expires, MUST NOT be reachable from
+any other session, and MUST NOT be written to any backup, snapshot, or log. Because files do not
+expire the way memory does, a sweep at startup MUST remove data orphaned by an unclean shutdown,
+and expiry MUST be enforced by code rather than assumed. Deletion means the data is unlinked and
+unreachable; no filesystem-level erasure guarantee is claimed, and the disclosure MUST NOT imply
+one. Uploads above a small size threshold are written to temporary storage by the web framework
+before any application code runs, so a disclosure MUST NOT claim that nothing reaches disk.
+
+The interface MUST disclose this retention accurately rather than claiming that no data is
+retained. If an authenticated storage path is added, users MUST be able to export and permanently
+delete all of their data, and retention MUST be documented and enforced in code.
 
 Personal data MUST NOT be sent to any third-party service without explicit, feature-specific
 consent and prior redaction of free-text fields. Pooling or aggregating data across users is out
@@ -106,7 +153,9 @@ and contains no real patient data.
 
 Rationale: this is the most sensitive category the regulation defines, held on behalf of people
 with a rare and frequently disbelieved condition. A promise that overstates privacy is worse than
-an accurate one.
+an accurate one -- and an earlier version of this principle did exactly that, forbidding disk
+writes the framework had already performed. Bounded retention that is disclosed honestly and
+enforced in code protects people better than an absolute nobody can verify.
 
 ### V. Evidence-Backed Changes
 
@@ -149,7 +198,9 @@ parsing MUST NOT run synchronously inside request handlers, and MUST NOT be reco
 request when their inputs are unchanged. Blocking CPU-bound work MUST be moved off the event loop.
 
 Identity and durability: any feature that retains user data across visits MUST rely on
-authenticated accounts and durable storage rather than in-memory session state.
+authenticated accounts and durable storage rather than session state. The session-scoped disk
+permitted by Principle IV is not durable storage: it is deleted at session end and MUST NOT be
+used to carry data from one visit to the next.
 
 ## Development Workflow & Quality Gates
 
@@ -168,8 +219,11 @@ recorded in the version line below.
 
 Versioning follows semantic versioning: MAJOR for removing or redefining a principle in a
 backward-incompatible way, MINOR for adding a principle or materially expanding guidance, PATCH
-for clarifications and wording. Every pull request MUST verify compliance with the principles
+for clarifications and wording. Narrowing what a principle permits is backward-incompatible and
+therefore MAJOR, whether by withdrawing a permission or by introducing a prohibition: the test
+is whether a plan that previously passed a gate would now fail it. Whether existing code
+complies is evidence of the change, never the justification for the bump. Every pull request MUST verify compliance with the principles
 above. Deviations MUST be justified in the pull request description, and a deviation that cannot
 be justified MUST block the merge. Added complexity MUST be justified against Principle II.
 
-**Version**: 1.1.0 | **Ratified**: 2026-08-12 | **Last Amended**: 2026-08-12
+**Version**: 2.0.0 | **Ratified**: 2026-08-12 | **Last Amended**: 2026-08-13

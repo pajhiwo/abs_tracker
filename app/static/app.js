@@ -974,28 +974,31 @@ function renderMlModel() {
         // Intro caption above the chart — explains what to look at first.
         const topEffect = effects[0];
         const topName = prettyFeature(topEffect.feature);
-        const topDir = topEffect.coef > 0 ? "raises" : "lowers";
+        const topDir = topEffect.coef > 0 ? "higher" : "lower";
         chartDiv.insertAdjacentHTML("beforebegin", `
             <div class="ml-chart-intro">
-                <h3 class="ml-chart-title">What affects your BAC the most?</h3>
+                <h3 class="ml-chart-title">What was most associated with your BAC?</h3>
                 <p>
                     Each bar is one thing the model looked at (a food, medication,
                     or meal-timing feature). Bars to the <strong>right</strong> mean
-                    that thing <strong>raises</strong> your BAC; bars to the
-                    <strong>left</strong> mean it <strong>lowers</strong> it.
-                    The longer the bar, the bigger the effect.
+                    your BAC tended to be <strong>higher</strong> when that thing was
+                    logged nearby; bars to the <strong>left</strong> mean it tended to
+                    be <strong>lower</strong>. These are associations in your own log,
+                    not proof that the food caused the change.
+                    The longer the bar, the stronger the association.
                     The thin horizontal line on each bar shows how uncertain that
-                    estimate is — if the line crosses zero, the effect is not
+                    estimate is — if the line crosses zero, the association is not
                     reliable yet.
                 </p>
                 <div class="ml-legend">
-                    <span class="ml-legend-item"><span class="ml-swatch" style="background:#ef4444"></span>Raises BAC (reliable)</span>
-                    <span class="ml-legend-item"><span class="ml-swatch" style="background:#22c55e"></span>Lowers BAC (reliable)</span>
-                    <span class="ml-legend-item"><span class="ml-swatch" style="background:#8b8fa3"></span>Effect not yet reliable</span>
+                    <span class="ml-legend-item"><span class="ml-swatch" style="background:#ef4444"></span>Associated with higher BAC (reliable)</span>
+                    <span class="ml-legend-item"><span class="ml-swatch" style="background:#22c55e"></span>Associated with lower BAC (reliable)</span>
+                    <span class="ml-legend-item"><span class="ml-swatch" style="background:#8b8fa3"></span>Association not yet reliable</span>
                 </div>
                 <p class="ml-chart-example">
                     <strong>Example:</strong> the top bar is
-                    <em>${topName}</em>, which ${topDir} your BAC the most in this dataset.
+                    <em>${topName}</em>, alongside which your BAC was most often
+                    ${topDir} in this dataset.
                 </p>
             </div>`);
 
@@ -1020,7 +1023,7 @@ function renderMlModel() {
             margin: { l: 200, r: 30, t: 30, b: 60 },
             height: Math.max(260, effects.length * 32 + 100),
             xaxis: {
-                title: "← Lowers BAC          Effect on BAC (permille)          Raises BAC →",
+                title: "← Associated with lower BAC          Association with BAC (permille)          Associated with higher BAC →",
                 zeroline: true,
                 zerolinecolor: "#666",
                 zerolinewidth: 2,
@@ -1065,7 +1068,9 @@ function renderMlModel() {
                 <tbody>${rows}</tbody>
             </table>
             <p class="ml-footnote">
-                <strong>Positive</strong> values raise your BAC, <strong>negative</strong> values lower it.
+                <strong>Positive</strong> values mean your BAC tended to be higher when this
+                was logged nearby; <strong>negative</strong> values, lower. These are
+                associations, not established causes.
                 A trigger is marked reliable (✓) when the uncertainty range
                 does not cross zero. Lookback window: ${ml.lookback_hours}h.
                 ${timeOfDayUsed ? "The model also adjusted for <em>time of day</em> in the background (not shown — it can't be acted on)." : ""}

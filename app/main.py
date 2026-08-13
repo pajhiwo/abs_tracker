@@ -4,6 +4,7 @@ ABS Tracker — FastAPI Web Application
 Run with:  uvicorn app.main:app --reload
 """
 
+import re
 import tempfile
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from pydantic import BaseModel
 
 from core import parse_log, map_lookback, compute_lift_scores
 from ai import generate_report, predict_risk, detect_combinations
+from app import sessions
 from app.sessions import SessionData, create_store, new_session_id
 from report.pdf_export import generate_pdf
 from ml.features import extract_features
@@ -23,11 +25,14 @@ app = FastAPI(title="ABS Diet Tracker", version="0.1.0")
 
 # Serve static files (HTML/CSS/JS)
 STATIC_DIR = Path(__file__).parent / "static"
+# index.html lives outside STATIC_DIR deliberately: it is rendered per request to
+# fill in the retention window, and serving it verbatim through the /static mount
+# would publish a working upload page with no retention figure on it.
+TEMPLATE_DIR = Path(__file__).parent / "templates"
 EXAMPLE_DIR = Path(__file__).parent.parent / "example"
 app.mount("/example", StaticFiles(directory=str(EXAMPLE_DIR)), name="example")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-# Session store (auto-detects InMemory vs Redis)
 store = create_store()
 
 
@@ -372,11 +377,35 @@ def _build_results_json(session: SessionData) -> dict:
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+_RETENTION_WINDOW = re.compile(
+    r'(<span class="retention-window">)[^<]*(</span>)', re.DOTALL
+)
+
+
+def _retention_window_text(ttl_seconds: int) -> str:
+    """Human phrasing for the session lifetime, rounded away from zero.
+
+    The disclosure frames this as an upper bound ("up to", "at most"), which is
+    what the implementation can actually honour: capacity pressure can discard a
+    session earlier, and rounding a sub-minute TTL up to one minute only ever
+    overstates the bound, never the guarantee.
+    """
+    minutes = max(1, -(-ttl_seconds // 60))
+    return "1 minute" if minutes == 1 else f"{minutes} minutes"
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    """Serve the main page."""
-    index_file = STATIC_DIR / "index.html"
-    return HTMLResponse(content=index_file.read_text())
+    """Serve the main page.
+
+    The retention figures in the disclosure are substituted from the live
+    SESSION_TTL so the stated retention cannot drift from the configured one
+    (constitution Principle IV). This is the only route that serves the page, so
+    there is no path on which the disclosure appears unrendered.
+    """
+    html = (TEMPLATE_DIR / "index.html").read_text()
+    window = _retention_window_text(sessions.SESSION_TTL)
+    return HTMLResponse(content=_RETENTION_WINDOW.sub(rf"\g<1>{window}\g<2>", html))
 
 
 @app.post("/upload")

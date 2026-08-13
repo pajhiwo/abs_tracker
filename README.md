@@ -10,7 +10,6 @@ Dependencies are managed with [uv](https://docs.astral.sh/uv/). Install it once
 ```bash
 cd abs_tracker
 uv sync                       # creates .venv, fetches Python 3.14 + dependencies
-uv sync --extra redis         # optional: adds the Redis session backend
 ```
 
 `uv sync` also installs the `dev` dependency group (pytest). Use

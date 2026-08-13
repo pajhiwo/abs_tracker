@@ -1,9 +1,9 @@
 """
 Pluggable session store for ABS Tracker.
 
-Supports:
-- InMemoryStore (default, single-instance deployments)
-- RedisStore (multi-instance / production, requires REDIS_URL env var)
+Currently one implementation: InMemoryStore. Access goes through the
+SessionStore protocol so a session-scoped disk backend can be added for
+multi-worker deployments without touching call sites.
 
 Usage:
     store = create_store()
@@ -89,46 +89,10 @@ class InMemoryStore:
 
 
 # ---------------------------------------------------------------------------
-# Redis Store
-# ---------------------------------------------------------------------------
-class RedisStore:
-    """Redis-backed store using pickle serialization + SETEX for TTL."""
-
-    def __init__(self, redis_url: str, ttl: int = SESSION_TTL):
-        import redis
-        import pickle  # noqa: F401
-
-        self._r = redis.from_url(redis_url)
-        self._ttl = ttl
-        self._prefix = "abs:session:"
-
-    def get(self, session_id: str) -> SessionData | None:
-        import pickle
-
-        raw = self._r.get(self._prefix + session_id)
-        if raw is None:
-            return None
-        # Touch TTL
-        self._r.expire(self._prefix + session_id, self._ttl)
-        return pickle.loads(raw)
-
-    def set(self, session_id: str, data: SessionData) -> None:
-        import pickle
-
-        self._r.setex(self._prefix + session_id, self._ttl, pickle.dumps(data))
-
-    def delete(self, session_id: str) -> None:
-        self._r.delete(self._prefix + session_id)
-
-
-# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
-def create_store() -> InMemoryStore | RedisStore:
-    """Auto-detect store backend from environment."""
-    redis_url = os.getenv("REDIS_URL")
-    if redis_url:
-        return RedisStore(redis_url)
+def create_store() -> SessionStore:
+    """Build the session store."""
     return InMemoryStore()
 
 

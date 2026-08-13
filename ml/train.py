@@ -163,9 +163,9 @@ def _verdict_message(verdict: str) -> str:
     return {
         "insufficient_cv_folds": "Not enough weekly variation for cross-validation. Keep logging.",
         "no_signal": "Model does not outperform your average BAC. More data needed or food is not the main driver.",
-        "modest": "Modest improvement. Effects are preliminary. Keep logging.",
-        "meaningful": "Meaningful improvement. Significant effects are likely useful.",
-        "strong": "Strong predictive power. Effects are stable enough to guide dietary experiments.",
+        "modest": "Modest improvement. Associations are preliminary. Keep logging.",
+        "meaningful": "Meaningful improvement. The stronger associations are worth a look.",
+        "strong": "Strong predictive power. Associations held up across time-ordered folds — worth raising with your clinician.",
     }[verdict]
 
 
