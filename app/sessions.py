@@ -15,7 +15,7 @@ import copy
 import os
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 SESSION_TTL = int(os.getenv("SESSION_TTL", "1800"))  # seconds
@@ -52,6 +52,15 @@ class SessionData:
     episode_threshold: float = 2.0
     filename: str | None = None
     raw_bytes: bytes | None = None
+    # Content hash of the uploaded bytes — used to key/invalidate cached results
+    # (FR-019). Set at upload time.
+    content_hash: str | None = None
+    # The job this session is currently waiting on, if any (data-model Session).
+    active_job_id: str | None = None
+    # Cache of built result payloads keyed by params_signature (data-model
+    # ResultCache; formalised with LRU + report/pdf artifacts in US2). The executor
+    # writes stage-one then stage-two payloads here.
+    results: dict[str, Any] = field(default_factory=dict)
 
 
 class SessionStore(Protocol):

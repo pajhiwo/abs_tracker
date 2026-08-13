@@ -52,6 +52,67 @@ fileInput.addEventListener("change", () => {
     if (fileInput.files[0]) uploadFile(fileInput.files[0]);
 });
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Extract a human message from an error/response body that may be either the
+// job/at-capacity shape ({status, message}) or FastAPI's {detail}.
+function errorMessage(body, fallback) {
+    if (!body) return fallback;
+    return body.message || body.detail || fallback;
+}
+
+// Fetch and render the current results payload (used on partial/complete).
+async function loadResults() {
+    const rr = await fetch("/results");
+    if (rr.ok) {
+        currentData = await rr.json();
+        renderAll();
+        return true;
+    }
+    return false;
+}
+
+// Poll a job to completion, rendering as soon as stage one (partial) is cached.
+// The server drives the interval via poll_after_seconds so it can back clients off.
+async function pollJob(jobId) {
+    while (true) {
+        const r = await fetch(`/jobs/${jobId}`);
+        if (!r.ok) {
+            const body = await r.json().catch(() => null);
+            uploadStatus.textContent = `✗ ${errorMessage(body, "Lost track of the analysis")}`;
+            uploadStatus.className = "status error";
+            return;
+        }
+        const s = await r.json();
+        const wait = (s.poll_after_seconds || 2) * 1000;
+
+        if (s.status === "queued") {
+            const pos = s.position != null ? `position ${s.position}` : "queued";
+            const eta = s.estimated_wait_seconds != null ? `, ~${s.estimated_wait_seconds}s` : "";
+            uploadStatus.textContent = `Waiting in queue (${pos}${eta})…`;
+            uploadStatus.className = "status loading";
+        } else if (s.status === "running") {
+            uploadStatus.textContent = "Analysing your log…";
+            uploadStatus.className = "status loading";
+        } else if (s.status === "partial") {
+            await loadResults();  // deterministic results are ready; ML still running
+            uploadStatus.textContent = "Analysing (finishing the model)…";
+            uploadStatus.className = "status loading";
+        } else if (s.status === "complete") {
+            await loadResults();
+            uploadStatus.textContent = "✓ Analysis complete";
+            uploadStatus.className = "status success";
+            return;
+        } else {
+            // failed / abandoned / expired
+            uploadStatus.textContent = `✗ ${errorMessage(s, "Analysis stopped")}`;
+            uploadStatus.className = "status error";
+            return;
+        }
+        await sleep(wait);
+    }
+}
+
 async function uploadFile(file) {
     uploadStatus.textContent = `Uploading ${file.name}…`;
     uploadStatus.className = "status loading";
@@ -69,15 +130,23 @@ async function uploadFile(file) {
             method: "POST",
             body: formData,
         });
-        if (!resp.ok) {
-            const err = await resp.json();
-            throw new Error(err.detail || "Upload failed");
+        if (!resp.ok && resp.status !== 202) {
+            const err = await resp.json().catch(() => null);
+            throw new Error(errorMessage(err, "Upload failed"));
         }
+        const exLink = document.getElementById("example-link");
+        if (exLink) exLink.style.display = "none";
+
+        if (resp.status === 202) {
+            const body = await resp.json();
+            uploadStatus.textContent = "Analysis queued…";
+            await pollJob(body.job_id);
+            return;
+        }
+        // 200 — a cached result was available immediately.
         currentData = await resp.json();
         uploadStatus.textContent = `✓ Loaded ${file.name}`;
         uploadStatus.className = "status success";
-        const exLink = document.getElementById("example-link");
-        if (exLink) exLink.style.display = "none";
         renderAll();
     } catch (e) {
         uploadStatus.textContent = `✗ ${e.message}`;
@@ -117,9 +186,18 @@ recomputeBtn.addEventListener("click", async () => {
                 episode_threshold: parseFloat(thresholdSlider.value),
             }),
         });
-        if (!resp.ok) throw new Error("Recompute failed");
-        currentData = await resp.json();
-        renderAll();
+        if (!resp.ok && resp.status !== 202) {
+            const err = await resp.json().catch(() => null);
+            throw new Error(errorMessage(err, "Recompute failed"));
+        }
+        if (resp.status === 202) {
+            const body = await resp.json();
+            await pollJob(body.job_id);
+        } else {
+            // 200 — unchanged settings served straight from cache.
+            currentData = await resp.json();
+            renderAll();
+        }
     } catch (e) {
         alert(e.message);
     } finally {
