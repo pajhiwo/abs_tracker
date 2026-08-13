@@ -18,16 +18,15 @@ optional.
 
 ## Two things that govern the whole list
 
-1. **R8a is a hard gate.** The dominant cost — a nested-`iterrows` `map_lookback` versus LASSO
-   training — is unmeasured, and it decides whether the executor is a thread pool or a process
-   pool, and whether `map_lookback` gets vectorised (research R2, R8a; plan Complexity Tracking).
-   Every task tagged **(CONTINGENT/R8a)** MUST NOT be started until T008 has produced numbers.
-   Building the process pool first is the specific mistake the plan calls out.
-2. **Many "shrink storage" tasks are now contingent on a decision, not just measurement.** R12
-   sanctioned session-scoped disk but deferred it to rung 2, which makes R4a's `DerivedBundle`
-   and R6's compound-split extraction *optional*. They are kept in the list because they still
-   pay off (less memory, one fewer re-parse), but each is tagged **(CONTINGENT/R8+R12)** and may
-   resolve to "retain the frame, do nothing" once T008's sizes are known.
+1. **R8a was a hard gate — now RESOLVED by T004.** The measurement showed the nested-`iterrows`
+   `map_lookback` dominates (436s at 12 months) while LASSO training stays ~2s. So the executor
+   is a **thread pool** and **vectorising `map_lookback` (T019) is blocking**, not optional
+   (research R2 resolved, R8a "Result (T004)").
+2. **The "shrink storage" tasks resolved to mostly no-ops.** T004 measured retained state at
+   <1 MB/session (29 MiB peak per analysis), so memory does not force any shrinking. R4a's
+   `DerivedBundle` (T031) resolves to "retain the frames, do nothing." R6's compound-split
+   extraction and `raw_bytes` drop (T045–T047) are kept **only for their privacy value** (fewer
+   copies of the upload), not for memory, and remain optional.
 
 ---
 
@@ -36,9 +35,9 @@ optional.
 **Purpose**: build the evidence-gathering tools the rest of the plan depends on. Nothing about
 the executor or the caps can be decided without these.
 
-- [ ] T001 [P] Create synthetic year-scale workbook generator in `tests/fixtures/generate_year_log.py`, reproducing the real format's structural quirks (aggregate rows, blank padding, compound dishes, partially filled nutrient columns), parameterised by months, generated on demand and never committed (research R8; must contain no real patient data per Principle IV).
-- [ ] T002 [P] Create per-stage measurement harness in `tests/fixtures/measure_scale.py` that records wall time for parse, `map_lookback`, `compute_lift_scores`, `extract_features`, `train_personal_model`, `generate_pdf`, plus serialised per-field `SessionData` size and peak resident memory for one analysis (research R8 "What to record").
-- [ ] T003 [P] Add a smoke test in `tests/test_fixtures.py` asserting `generate_year_log.py` output parses through `core/parser.py` and contains the intended quirks, so the fixture itself is trustworthy before any measurement rides on it.
+- [X] T001 [P] Create synthetic year-scale workbook generator in `tests/fixtures/generate_year_log.py`, reproducing the real format's structural quirks (aggregate rows, blank padding, compound dishes, partially filled nutrient columns), parameterised by months, generated on demand and never committed (research R8; must contain no real patient data per Principle IV).
+- [X] T002 [P] Create per-stage measurement harness in `tests/fixtures/measure_scale.py` that records wall time for parse, `map_lookback`, `compute_lift_scores`, `extract_features`, `train_personal_model`, `generate_pdf`, plus serialised per-field `SessionData` size and peak resident memory for one analysis (research R8 "What to record").
+- [X] T003 [P] Add a smoke test in `tests/test_fixtures.py` asserting `generate_year_log.py` output parses through `core/parser.py` and contains the intended quirks, so the fixture itself is trustworthy before any measurement rides on it.
 
 ---
 
@@ -49,28 +48,29 @@ story sits on, plus the measurement gate.
 
 ### The measurement gate
 
-- [ ] T004 Run `tests/fixtures/measure_scale.py` across the example workbook, 3, 12 and 24 months; record the numbers in `specs/001-concurrent-analysis/research.md` under R8/R8a; and from them decide (a) thread pool vs process pool, (b) whether `map_lookback` is vectorised, (c) provisional values for `max_concurrent`, grace window, `max_waiting`, `max_estimated_wait`, `MAX_SESSIONS`, upload byte cap, and the complexity metric. **This unblocks every (CONTINGENT/R8a) task.**
+- [X] T004 Run `tests/fixtures/measure_scale.py` across the example workbook, 3, 12 and 24 months; record the numbers in `specs/001-concurrent-analysis/research.md` under R8/R8a; and from them decide (a) thread pool vs process pool, (b) whether `map_lookback` is vectorised, (c) provisional values for `max_concurrent`, grace window, `max_waiting`, `max_estimated_wait`, `MAX_SESSIONS`, upload byte cap, and the complexity metric. **This unblocks every (CONTINGENT/R8a) task.**
+  - **RESOLVED (measured):** `map_lookback` dominates (436s at 12mo) → **(a) thread pool**, **(b) vectorise `map_lookback` — now blocking (T019)**. Memory tiny (29 MiB peak, <1 MB/session) → **`DerivedBundle` (T031) resolves to "retain frames, do nothing"**; R6 shrink (T045–T047) kept only for privacy. Caps: `max_concurrent=min(cpu,4)`, `MAX_SESSIONS=500`, upload cap 10 MB, complexity = `len(bac)×len(meals)`. Full table in research.md R8a "Result (T004)".
 
 ### Session store (all stories depend on it — R10, R5)
 
-- [ ] T005 Write the store protocol conformance suite in `tests/test_sessions.py` against the `SessionStore` protocol, asserting `get()` returns a copy and that a live session is never evicted to admit a new one (research R5 seam 1, R10; data-model "Store semantics"). Write it to FAIL against current `InMemoryStore` first.
-- [ ] T006 Make `InMemoryStore.get()` return a copy and remove the oldest-session eviction from `InMemoryStore.set()` in `app/sessions.py`; replace it with a refuse-new-session-at-capacity signal the handler can surface as the R10 `503` (research R10; data-model "Capacity").
-- [ ] T007 Raise/re-home `MAX_SESSIONS` as a memory-derived backstop (value from T004) in `app/sessions.py`, and document that expiry — not capacity — is the normal reclamation path (research R10).
+- [X] T005 Write the store protocol conformance suite in `tests/test_sessions.py` against the `SessionStore` protocol, asserting `get()` returns a copy and that a live session is never evicted to admit a new one (research R5 seam 1, R10; data-model "Store semantics"). Write it to FAIL against current `InMemoryStore` first.
+- [X] T006 Make `InMemoryStore.get()` return a copy and remove the oldest-session eviction from `InMemoryStore.set()` in `app/sessions.py`; replace it with a refuse-new-session-at-capacity signal the handler can surface as the R10 `503` (research R10; data-model "Capacity").
+- [X] T007 Raise/re-home `MAX_SESSIONS` as a memory-derived backstop (value from T004) in `app/sessions.py`, and document that expiry — not capacity — is the normal reclamation path (research R10).
 
 ### Deterministic core, decoupled and staged (R1 — enables US1 staging and US2 caching)
 
-- [ ] T008 Add `tests/test_compute.py` asserting `summary` is computed without invoking the ML block, and that an ML failure leaves `summary`, lift scores and the rest of the payload intact (Principle II; research R1). Write to FAIL first.
-- [ ] T009 Create `app/compute.py` by moving `_run_analysis` and `_build_results_json` out of `app/main.py`, split into stage one (summary + lift scores, no model) and stage two (optional ML), returning the existing `ResultPayload` shape unchanged (research R1; data-model ResultPayload; plan Structure Decision).
-- [ ] T010 Reconcile the `exclude_proteins` default so `AnalysisParams` and the `/upload` path agree, compute `params_signature` from resolved values over all five fields, and add a regression test in `tests/test_compute.py` pinning the reconciled default (data-model AnalysisParams + "pre-existing bug"; contracts "Parameter defaults").
+- [X] T008 Add `tests/test_compute.py` asserting `summary` is computed without invoking the ML block, and that an ML failure leaves `summary`, lift scores and the rest of the payload intact (Principle II; research R1). Write to FAIL first.
+- [X] T009 Create `app/compute.py` by moving `_run_analysis` and `_build_results_json` out of `app/main.py`, split into stage one (summary + lift scores, no model) and stage two (optional ML), returning the existing `ResultPayload` shape unchanged (research R1; data-model ResultPayload; plan Structure Decision).
+- [X] T010 Reconcile the `exclude_proteins` default so `AnalysisParams` and the `/upload` path agree, compute `params_signature` from resolved values over all five fields, and add a regression test in `tests/test_compute.py` pinning the reconciled default (data-model AnalysisParams + "pre-existing bug"; contracts "Parameter defaults").
 
 ### Job queue (US1 and US3 both need it — R5, R5a)
 
-- [ ] T011 Write `tests/test_jobs.py` covering ordering, atomic-and-leased claim, position, cancellation, lease expiry/reclaim, and foreign-`session_id` isolation — parameterised to run against BOTH backings (data-model AnalysisJob/AnalysisQueue; research R5a). Write to FAIL first.
-- [ ] T012 Define the `JobQueue` protocol and the `AnalysisJob`/`JobState` model in `app/jobs.py`, referencing jobs by id only, with the state machine from data-model (`queued→running→partial→complete`, plus `failed/cancelled/abandoned/expired`).
-- [ ] T013 [P] Implement the in-memory `JobQueue` backing in `app/jobs.py` for tests.
-- [ ] T014 Implement the SQLite `JobQueue` backing in `app/jobs.py` with the R5a conditions: WAL + `synchronous=NORMAL` + `foreign_keys=ON` + non-zero `busy_timeout`; single-statement `UPDATE … RETURNING` atomic leased claim; `BEGIN IMMEDIATE` for writes; short transactions; bounded `SQLITE_BUSY` retry surfaced as `503`; lease-reclaim as the crash path (research R5a).
-- [ ] T015 In `app/jobs.py` and the queue call sites in `app/main.py`, ensure every queue call from an `async` handler is offloaded (`run_in_threadpool` or a sync API used only from worker threads), since `sqlite3` blocks the event loop — the exact defect the feature removes, applied to the queue (research R5a "Request-path discipline").
-- [ ] T016 Implement the startup sweep in `app/jobs.py` (or app lifespan in `app/main.py`): reclaim or fail leased jobs and clear `queued` rows whose sessions no longer exist, so a redeploy never serves stale positions (research R5a "Ephemeral filesystem").
+- [X] T011 Write `tests/test_jobs.py` covering ordering, atomic-and-leased claim, position, cancellation, lease expiry/reclaim, and foreign-`session_id` isolation — parameterised to run against BOTH backings (data-model AnalysisJob/AnalysisQueue; research R5a). Write to FAIL first.
+- [X] T012 Define the `JobQueue` protocol and the `AnalysisJob`/`JobState` model in `app/jobs.py`, referencing jobs by id only, with the state machine from data-model (`queued→running→partial→complete`, plus `failed/cancelled/abandoned/expired`).
+- [X] T013 [P] Implement the in-memory `JobQueue` backing in `app/jobs.py` for tests.
+- [X] T014 Implement the SQLite `JobQueue` backing in `app/jobs.py` with the R5a conditions: WAL + `synchronous=NORMAL` + `foreign_keys=ON` + non-zero `busy_timeout`; single-statement `UPDATE … RETURNING` atomic leased claim; `BEGIN IMMEDIATE` for writes; short transactions; bounded `SQLITE_BUSY` retry surfaced as `503`; lease-reclaim as the crash path (research R5a).
+- [ ] T015 In `app/jobs.py` and the queue call sites in `app/main.py`, ensure every queue call from an `async` handler is offloaded (`run_in_threadpool` or a sync API used only from worker threads), since `sqlite3` blocks the event loop — the exact defect the feature removes, applied to the queue (research R5a "Request-path discipline"). *Queue half done: the backing exposes only a synchronous, thread-safe API with no event-loop calls, so it is safe to wrap. The `run_in_threadpool` wrapping lands with the call sites in US1 (T020/T023).*
+- [X] T016 Implement the startup sweep in `app/jobs.py` (or app lifespan in `app/main.py`): reclaim or fail leased jobs and clear `queued` rows whose sessions no longer exist, so a redeploy never serves stale positions (research R5a "Ephemeral filesystem").
 
 **Checkpoint**: measurement is in hand, the store is correct and copy-returning, the deterministic
 core is standalone and staged, and the queue exists with two exercised backings. User stories can begin.
@@ -85,8 +85,8 @@ core is standalone and staged, and the queue exists with two exercised backings.
 result and every page stays responsive throughout (spec US1 Independent Test; SC-002).
 
 - [ ] T017 [US1] Write `tests/test_concurrency.py`: with analyses running, non-analysis pages respond under 2s and no page fails; each concurrent analysis returns results derived only from its own log (SC-002, SC-007; spec US1 scenarios 1–4). Write to FAIL first.
-- [ ] T018 [US1] **(CONTINGENT/R8a)** Create `app/executor.py` — the claim/execute supervisor — as a thread pool or process pool per T004's decision; do not build before T004 (research R2; plan Complexity Tracking). Size from T004.
-- [ ] T019 [US1] **(CONTINGENT/R8a)** If T004 selected vectorisation, rewrite `map_lookback` in `core/analysis.py` as an interval/`merge_asof` join, and add an equivalence test in `tests/test_analysis.py` against `example/example_log.xlsx` before trusting it (research R8a; Principle V).
+- [ ] T018 [US1] **(RESOLVED/R8a → thread pool)** Create `app/executor.py` — the claim/execute supervisor — as a `ThreadPoolExecutor` sized `min(cpu_count, 4)` with an env override (research R2 resolved; plan Complexity Tracking).
+- [X] T019 [US1] **(RESOLVED/R8a → vectorise, BLOCKING)** Rewrite `map_lookback` in `core/analysis.py` as a vectorised interval join (exact-time window + approximate date-level fallback), and add an equivalence test in `tests/test_analysis.py` against `example/example_log.xlsx` before trusting it (research R8a; Principle V). This is the measured bottleneck (436s → target sub-second at 12mo). **Done: `searchsorted`-based window slice; equivalence pinned on example workbook (4 window sizes), synthetic fixture and untimed fallback; 12-month lookback now <1s (perf test asserts <15s).**
 - [ ] T020 [US1] Rework `POST /upload` in `app/main.py` to validate, parse the upload awaited off the event loop, hash the bytes, discard the bytes when the handler returns, then enqueue an analysis job referencing the session's parsed frames (research R11; contracts `POST /upload`; data-model AnalysisJob "does NOT carry bytes").
 - [ ] T021 [US1] Wire `app/executor.py` to run `app/compute.py` staged: cache stage one (summary + lift scores) and mark the job `partial`, then run stage two (ML) and mark `complete`, updating the cached payload (data-model AnalysisJob "Staging"; contracts "Staged results").
 - [ ] T022 [US1] Implement `GET /jobs/{job_id}` in `app/main.py` returning the status shape (including `partial`), enforcing owner-only access with `404` for a foreign/unknown id (contracts "Job status"; data-model AnalysisJob validation).
@@ -109,7 +109,7 @@ result and every page stays responsive throughout (spec US1 Independent Test; SC
 - [ ] T028 [US2] Make `GET /report` and `GET /report/pdf` in `app/main.py` serve from cache after stage one (`200`), returning `202` only while no analysis exists yet — never triggering training to read `summary` (contracts endpoint table; research R1).
 - [ ] T029 [US2] Add the FR-020 isolation assertion to `tests/test_results_cache.py` (or `tests/test_privacy_isolation.py`): a result computed for one session is never served to another, including identical uploads — asserted by test, not left to structure (data-model ResultCache "Isolation").
 - [ ] T030 [US2] Add a fidelity/equivalence test in `tests/test_results_cache.py` comparing a cached artifact's *analysis content* (including `low_confidence`, `always_present`, observation counts) to a fresh computation, comparing report data rather than PDF bytes, since `generate_pdf` embeds a timestamp (FR-018, Principle III; data-model ResultCache "Fidelity"/"Not byte-identity").
-- [ ] T031 [US2] **(CONTINGENT/R8+R12)** If T004's sizes justify it, build `DerivedBundle` (`lift_scores`, `ingredient_readings`, `lookback_pair_count`) in `app/compute.py`, adapt `/predict` and `/ingredient/{name}` in `app/main.py` to read it, and adapt `detect_combinations` to the membership form; otherwise retain `lookback_df`/score frames and record the decision (research R4a, R12; data-model DerivedBundle).
+- [ ] T031 [US2] **(RESOLVED/R8+R12 → skip)** T004 measured retained state at <1 MB/session and peak 29 MiB, so `DerivedBundle` is not justified: **retain `lookback_df`/score frames as-is and do nothing here** beyond recording the decision (research R4a, R12; data-model DerivedBundle). Left in the list so the "do nothing" outcome is explicit, not an omission.
 
 **Checkpoint**: US1 + US2 both work; recomputation is gone for the common path.
 

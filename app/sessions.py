@@ -11,6 +11,7 @@ Usage:
     store.set(session_id, session)
 """
 
+import copy
 import os
 import time
 import uuid
@@ -18,7 +19,20 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 SESSION_TTL = int(os.getenv("SESSION_TTL", "1800"))  # seconds
-MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "100"))
+# Capacity is a memory-derived backstop, NOT the normal reclamation path — that is
+# TTL expiry (see InMemoryStore). T004 measured one analysis at ~29 MiB peak and
+# <1 MB retained per session, so 500 sessions is comfortable headroom rather than a
+# limit expected to bind in normal use. A live session is never evicted to admit a
+# new one (FR-021); at capacity a new session is refused instead.
+MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "500"))
+
+
+class SessionStoreAtCapacity(Exception):
+    """Raised when a NEW session cannot be admitted because the store is full.
+
+    The handler surfaces this as the R10 `503` "session saturation" response. It is
+    never raised for updates to an already-present session.
+    """
 
 
 @dataclass
@@ -34,7 +48,7 @@ class SessionData:
     hours: float = 3.0
     min_obs: int = 3
     split_compounds: bool = True
-    exclude_proteins: bool = False
+    exclude_proteins: bool = True  # reconciled default (see app.compute)
     episode_threshold: float = 2.0
     filename: str | None = None
     raw_bytes: bytes | None = None
@@ -50,7 +64,15 @@ class SessionStore(Protocol):
 # In-Memory Store
 # ---------------------------------------------------------------------------
 class InMemoryStore:
-    """Dict-based store with TTL expiry and capacity cap."""
+    """Dict-based store with TTL expiry and a capacity backstop.
+
+    Copy semantics: ``get()`` returns a deep copy and ``set()`` stores a deep copy,
+    so a caller mutating a fetched session never changes stored state without an
+    explicit ``set()``. This matches how a future disk/multi-worker backing behaves
+    (each ``get()`` deserialises a fresh object), so call sites do not have to change
+    when the store does (research R5 seam 1; data-model "Store semantics"). Retained
+    state is <1 MB per session (T004), so per-call copying is cheap at rung 1.
+    """
 
     def __init__(self, ttl: int = SESSION_TTL, max_sessions: int = MAX_SESSIONS):
         self._store: dict[str, tuple[float, SessionData]] = {}
@@ -66,17 +88,20 @@ class InMemoryStore:
         if time.time() - ts > self._ttl:
             del self._store[session_id]
             return None
-        # Touch timestamp
+        # Touch timestamp; hand back a copy so the caller cannot mutate stored state.
         self._store[session_id] = (time.time(), data)
-        return data
+        return copy.deepcopy(data)
 
     def set(self, session_id: str, data: SessionData) -> None:
         self._cleanup()
-        # Evict oldest if at capacity
+        # Refuse a NEW session at capacity rather than evicting a live one (FR-021).
+        # Updating an existing session is always allowed. Expiry — not eviction — is
+        # how capacity is reclaimed.
         if session_id not in self._store and len(self._store) >= self._max:
-            oldest_key = min(self._store, key=lambda k: self._store[k][0])
-            del self._store[oldest_key]
-        self._store[session_id] = (time.time(), data)
+            raise SessionStoreAtCapacity(
+                f"session store at capacity ({self._max} sessions)"
+            )
+        self._store[session_id] = (time.time(), copy.deepcopy(data))
 
     def delete(self, session_id: str) -> None:
         self._store.pop(session_id, None)

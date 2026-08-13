@@ -51,13 +51,17 @@ to trigger training.
 
 ## R2. What executes the analysis?
 
-**Decision — UNRESOLVED, blocked on R8a.** The queue is settled; the executor behind it is
-not. The working assumption is a `ProcessPoolExecutor` sized to available cores, fronted by an
-explicit queue owned by the application, with a single Uvicorn worker serving requests — but
-if R8a shows `map_lookback` dominates, vectorising it moves the residual work into NumPy,
-where threads release the GIL and a thread pool would do. **Do not build the pool before the
-measurement.** The rationale below argues for processes *given the current code*; that premise
-is exactly what R8a tests.
+**Decision — RESOLVED by the T004 measurement (see R8a): a `ThreadPoolExecutor`, contingent
+on vectorising `map_lookback`.** The measurement showed that essentially all of the wall time
+is a single O(readings × meals) pure-Python loop in `map_lookback` — 436 seconds at twelve
+months — while every NumPy/sklearn stage (LASSO training included) stays around two seconds.
+Once `map_lookback` is rewritten as a vectorised join, no long GIL-bound Python stretch
+remains: the residual cost is parse (I/O plus openpyxl) and sklearn training, both of which
+release the GIL. A thread pool therefore gives the needed parallelism without a process pool's
+DataFrame pickling across the boundary, and it keeps the in-memory session store trivially
+shared. The process-pool rationale below is retained for the record because it was correct
+*for the un-vectorised code*; vectorisation is what changes the answer, and it is now a
+blocking task (T019), not an option.
 
 **Rationale**:
 
@@ -603,6 +607,48 @@ evicts mid-session at the spec's target load), and the upload size cap (provisio
 structural quirks of the real format — aggregate rows, blank padding, compound dishes,
 partially filled nutrient columns. It must not contain real patient data (Principle IV),
 and should be generated on demand rather than committed.
+
+### Result (T004, measured)
+
+Run: `uv run python tests/fixtures/measure_scale.py --months 1 3 12`
+(the 24-month case was abandoned — the un-vectorised `map_lookback` had not finished after
+~11 minutes, which is itself the finding).
+
+Wall time per stage, seconds:
+
+| stage | 1mo (160×449) | 3mo (509×1348) | 12mo (2011×5288) |
+|---|---|---|---|
+| parse | 0.06 | 0.16 | 0.61 |
+| **map_lookback** | **2.95** | **28.15** | **435.93** |
+| compute_lift_scores | 0.02 | 0.02 | 0.02 |
+| lift_scores_by_period | 0.04 | 0.07 | 0.07 |
+| extract_features | 0.16 | 0.47 | 1.87 |
+| train_personal_model | 1.09 | 1.10 | 2.05 |
+| generate_report | 0.00 | 0.01 | 0.01 |
+| generate_pdf | 0.05 | 0.11 | 0.17 |
+
+Retained field sizes (pickled) at 12 months: `meals_df` 330 KiB, `lookback_df` 338 KiB,
+`bac_df` 111 KiB, `scores_by_period` 10 KiB, `scores_all` 3 KiB. Peak Python allocation for
+one 12-month analysis: **29 MiB**.
+
+**What the numbers decide**:
+
+1. **`map_lookback` dominates, overwhelmingly, and scales ~O(readings × meals)** — 2.95 →
+   28.15 → 435.93s. It IS the "one analysis freezes the site" defect. R1's premise that
+   training dominates is **refuted**: training is ~2s even at twelve months. → **T019
+   (vectorise `map_lookback`) is now blocking, not contingent.**
+2. **Executor = thread pool (R2 resolved).** After vectorisation the only meaningful CPU is
+   sklearn training (~2s), which releases the GIL. Threads suffice; a process pool's DataFrame
+   pickling is unjustified overhead. → **T018 builds a `ThreadPoolExecutor`.**
+3. **Memory is a non-issue → the `DerivedBundle`/aggressive-shrink work is not justified.**
+   One analysis peaks at 29 MiB and retained state is <1 MB/session; 100 sessions ≈ <100 MB.
+   → **T031 resolves to "retain the frames, do nothing"; the R6/`raw_bytes` shrink (T045–T047)
+   is kept only for its privacy value (fewer copies), not for memory.**
+4. **Provisional caps** (revisit after T019 lands, which collapses per-job CPU to sub-second):
+   `max_concurrent` = `min(cpu_count, 4)`; `MAX_SESSIONS` = 500 (memory-derived backstop, not
+   the normal reclamation path); upload byte cap = 10 MB (a 12-month workbook is well under
+   1 MB); complexity metric = estimated lookback pairs = `len(bac_df) × len(meals_df)` with a
+   `422 too_complex` ceiling set from the post-T019 timing.
 
 ---
 
