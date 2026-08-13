@@ -101,6 +101,7 @@ class JobQueue(Protocol):
     def touch(self, job_id: str, session_id: str) -> AnalysisJob | None: ...
     def reclaim_expired_leases(self, now: float | None = None) -> list[str]: ...
     def count_waiting(self) -> int: ...
+    def expire_session(self, session_id: str) -> int: ...
     def sweep(self, session_exists: Callable[[str], bool]) -> dict: ...
 
 
@@ -227,6 +228,21 @@ class InMemoryJobQueue:
     def count_waiting(self) -> int:
         with self._lock:
             return sum(1 for j in self._jobs.values() if j.state == JobState.QUEUED)
+
+    def expire_session(self, session_id: str) -> int:
+        """Expire every non-terminal job owned by a session (FR-015, FR-022).
+
+        Called when the session is discarded, so a queued job does not linger holding a
+        place for someone whose data is already gone, and a running one is not cached.
+        """
+        with self._lock:
+            n = 0
+            for job in self._jobs.values():
+                if job.session_id == session_id and not job.is_terminal:
+                    job.state = JobState.EXPIRED
+                    job.lease_expires_at = None
+                    n += 1
+            return n
 
     def sweep(self, session_exists: Callable[[str], bool]) -> dict:
         with self._lock:
@@ -504,6 +520,21 @@ class SqliteJobQueue:
         with self._lock:
             cur = self._conn.execute("SELECT COUNT(*) AS n FROM jobs WHERE state='queued'")
             return int(cur.fetchone()["n"])
+
+    def expire_session(self, session_id: str) -> int:
+        """Expire every non-terminal job owned by a session (FR-015, FR-022)."""
+
+        def _do() -> int:
+            cur = self._conn.execute(
+                "UPDATE jobs SET state='expired', lease_expires_at=NULL "
+                "WHERE session_id=? "
+                "AND state NOT IN ('complete','failed','cancelled','abandoned','expired') "
+                "RETURNING job_id",
+                (session_id,),
+            )
+            return len(cur.fetchall())
+
+        return self._write(_do)
 
     def sweep(self, session_exists: Callable[[str], bool]) -> dict:
         def _do() -> dict:

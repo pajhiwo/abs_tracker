@@ -16,7 +16,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from app.results_cache import ResultCache
 
@@ -86,10 +86,25 @@ class InMemoryStore:
     state is <1 MB per session (T004), so per-call copying is cheap at rung 1.
     """
 
-    def __init__(self, ttl: int = SESSION_TTL, max_sessions: int = MAX_SESSIONS):
+    def __init__(
+        self,
+        ttl: int = SESSION_TTL,
+        max_sessions: int = MAX_SESSIONS,
+        on_expire: Callable[[str], None] | None = None,
+    ):
         self._store: dict[str, tuple[float, SessionData]] = {}
         self._ttl = ttl
         self._max = max_sessions
+        # Called with the session id when a session is discarded on TTL expiry, so the
+        # owner can tear down everything reachable — notably its queued/running jobs
+        # (FR-015, FR-022). Set by the application after the queue exists.
+        self.on_expire = on_expire
+
+    def _discard(self, session_id: str) -> None:
+        """Remove a session and fire the expiry hook (FR-022)."""
+        self._store.pop(session_id, None)
+        if self.on_expire is not None:
+            self.on_expire(session_id)
 
     def get(self, session_id: str) -> SessionData | None:
         self._cleanup()
@@ -98,7 +113,7 @@ class InMemoryStore:
             return None
         ts, data = entry
         if time.time() - ts > self._ttl:
-            del self._store[session_id]
+            self._discard(session_id)
             return None
         # Touch timestamp; hand back a copy so the caller cannot mutate stored state.
         self._store[session_id] = (time.time(), data)
@@ -122,7 +137,7 @@ class InMemoryStore:
         now = time.time()
         expired = [k for k, (ts, _) in self._store.items() if now - ts > self._ttl]
         for k in expired:
-            del self._store[k]
+            self._discard(k)
 
 
 # ---------------------------------------------------------------------------

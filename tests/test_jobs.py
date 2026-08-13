@@ -164,6 +164,46 @@ def test_touch_updates_presence_owner_only(queue):
     assert queue.touch(job.job_id, "other") is None
 
 
+def test_expire_session_expires_only_that_sessions_non_terminal_jobs(queue):
+    """FR-015/FR-022: expiring a session tears down its queued and running jobs, and
+    only its own — another session's work is untouched, and a job that already reached
+    a terminal state is not disturbed."""
+    mine_queued = queue.enqueue("mine", "sig-a")
+    mine_running = queue.enqueue("mine", "sig-b")
+    others = queue.enqueue("other", "sig-c")
+
+    # Make one of mine 'running' by claiming until we get it.
+    for _ in range(3):
+        c = queue.claim(lease_seconds=60)
+        if c is not None and c.job_id == mine_running.job_id:
+            break
+    # And drive one of mine to a terminal state so we can prove it is left alone.
+    done = queue.enqueue("mine", "sig-d")
+    queue.set_state(done.job_id, JobState.COMPLETE)
+
+    n = queue.expire_session("mine")
+
+    assert n == 2  # the queued and running ones, not the already-complete one
+    assert queue.get(mine_queued.job_id).state == JobState.EXPIRED
+    assert queue.get(mine_running.job_id).state == JobState.EXPIRED
+    assert queue.get(mine_running.job_id).lease_expires_at is None
+    assert queue.get(done.job_id).state == JobState.COMPLETE  # untouched
+    assert queue.get(others.job_id).state == JobState.QUEUED  # other session untouched
+
+
+def test_expire_session_frees_the_queue_place(queue):
+    """An expired session's queued job must not keep holding a position (FR-015)."""
+    first = queue.enqueue("gone", "sig")
+    second = queue.enqueue("stays", "sig")
+    assert queue.position(second.job_id) == 2
+
+    queue.expire_session("gone")
+
+    # With the first session's job expired, the survivor moves up.
+    assert queue.position(second.job_id) == 1
+    assert queue.count_waiting() == 1
+
+
 def test_startup_sweep_expires_orphans_and_reclaims_running(queue):
     alive = queue.enqueue("alive", "sig")
     dead = queue.enqueue("dead", "sig")

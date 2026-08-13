@@ -32,11 +32,19 @@ from app.compute import (
 )
 from app.jobs import JobState, create_job_queue
 from app.executor import AnalysisExecutor, size_class
+from app import limits
+from app.limits import LimitUploadSizeMiddleware
 from report.pdf_export import generate_pdf
 
 store = create_store()
 queue = create_job_queue()
 executor = AnalysisExecutor(queue, store)
+
+# When a session expires, everything reachable from it must go — including any queued or
+# running job it owns (FR-015, FR-022). The store fires this on TTL removal. At rung 1 the
+# queue is in-memory so this is a cheap, non-blocking call; a file-backed rung-2 store
+# would offload it like the other queue calls (research R5b).
+store.on_expire = lambda sid: queue.expire_session(sid)
 
 
 @asynccontextmanager
@@ -55,6 +63,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ABS Diet Tracker", version="0.1.0", lifespan=lifespan)
+
+# Cap the upload body before it reaches any handler, so one oversized file cannot spool
+# into memory or consume analysis capacity (FR-028, FR-029; research R9).
+app.add_middleware(LimitUploadSizeMiddleware)
 
 # Serve static files (HTML/CSS/JS)
 STATIC_DIR = Path(__file__).parent / "static"
@@ -159,6 +171,16 @@ def _set_at_capacity(response: Response, message: str, retry_after: int = 180) -
         "message": message,
         "retry_after_seconds": retry_after,
     }
+
+
+def _set_too_complex(response: Response) -> dict:
+    """Mark `response` as a 422 too-complex and return its body (FR-030).
+
+    Mutates the injected response (not a new one) so a freshly-issued session cookie
+    survives, matching `_set_at_capacity`.
+    """
+    response.status_code = 422
+    return limits.too_complex_body()
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +309,11 @@ async def upload_file(
     if bac_df.empty:
         raise HTTPException(400, "No BAC readings found in the file")
 
+    # Within the byte cap but too large to analyse in reasonable time → refuse now, before
+    # it occupies a worker (FR-030). This is the guard that actually protects the queue.
+    if limits.exceeds_complexity(bac_df, meals_df):
+        return _set_too_complex(response)
+
     session.meals_df = meals_df
     session.bac_df = bac_df
     session.med_periods = med_periods
@@ -341,6 +368,8 @@ async def recompute(
         meals_df, bac_df, med_periods = await run_in_threadpool(
             _parse_bytes, session.raw_bytes, params.split_compounds
         )
+        if limits.exceeds_complexity(bac_df, meals_df):
+            return _set_too_complex(response)
         session.meals_df = meals_df
         session.bac_df = bac_df
         session.med_periods = med_periods
