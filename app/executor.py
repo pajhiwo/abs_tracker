@@ -24,7 +24,12 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
-from app.compute import build_result_payload, compute_ml_block, run_analysis
+from app.compute import (
+    build_report_document,
+    build_result_payload,
+    compute_ml_block,
+    run_analysis,
+)
 from app.jobs import AnalysisJob, JobQueue, JobState
 from app.sessions import SessionStore, SessionStoreAtCapacity
 
@@ -116,7 +121,8 @@ class AnalysisExecutor:
             self._queue.set_state(job_id, JobState.EXPIRED)
             return
         try:
-            # Stage one: deterministic core. No model.
+            # Stage one: deterministic core. No model. Cache both the payload and the
+            # report document so /results and /report are servable now (US2, FR-016/017).
             run_analysis(
                 session,
                 session.hours,
@@ -125,17 +131,20 @@ class AnalysisExecutor:
                 session.exclude_proteins,
             )
             payload = build_result_payload(session, include_ml=False)
-            session.results[sig] = payload
+            report = build_report_document(session, payload)
+            session.results.set_payload(sig, payload)
+            session.results.set_report(sig, report)
             if not self._persist(session_id, session):
                 self._queue.set_state(job_id, JobState.EXPIRED)
                 return
             self._queue.set_state(job_id, JobState.PARTIAL)
 
             # Stage two: optional ML, layered on top. A failure here is recorded in
-            # the payload's `ml` field, not raised (Principle II).
+            # the payload's `ml` field, not raised (Principle II). The report document
+            # is model-free, so it does not change here.
             ml_block = compute_ml_block(session)
             payload = {**payload, "ml": ml_block}
-            session.results[sig] = payload
+            session.results.set_payload(sig, payload)
             if not self._persist(session_id, session):
                 self._queue.set_state(job_id, JobState.EXPIRED)
                 return

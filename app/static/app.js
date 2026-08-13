@@ -1322,6 +1322,10 @@ generateReportBtn.addEventListener("click", async () => {
     generateReportBtn.textContent = "Generating…";
     try {
         const resp = await fetch("/report");
+        if (resp.status === 202) {
+            // Stage one hasn't cached the report yet — the analysis is still running.
+            throw new Error("Your analysis is still running — try again in a moment.");
+        }
         if (!resp.ok) throw new Error("Report generation failed");
         const data = await resp.json();
         _renderReport(data);

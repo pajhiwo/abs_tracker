@@ -26,6 +26,7 @@ from pathlib import Path
 import pandas as pd
 
 from core import compute_lift_scores, map_lookback, parse_log
+from ai import detect_combinations, generate_report
 from ml.features import extract_features
 from ml.train import train_personal_model
 from app.sessions import SessionData
@@ -315,7 +316,7 @@ def build_result_payload(session: SessionData, *, include_ml: bool = True) -> di
 
     ml_block = compute_ml_block(session) if include_ml else None
 
-    return {
+    payload = {
         "filename": session.filename,
         "hours": session.hours,
         "min_obs": session.min_obs,
@@ -330,3 +331,26 @@ def build_result_payload(session: SessionData, *, include_ml: bool = True) -> di
         "period_lifts": period_lifts,
         "ml": ml_block,
     }
+    return payload
+
+
+def build_report_document(session: SessionData, payload: dict) -> dict:
+    """Build the ``/report`` document from stage-one state (research R1).
+
+    This is the report the frontend renders and the PDF is drawn from. It reads the
+    deterministic lift scores and the summary — never the model — so it is servable
+    the moment stage one has run (contracts "Staged results"; Principle II). The
+    executor caches this alongside the payload so re-opening the report does not
+    recompute (FR-016, FR-017).
+    """
+    report = generate_report(
+        session.scores_all,
+        session.scores_by_period or {},
+        session.bac_df,
+        session.med_periods or {},
+        payload["summary"],
+    )
+    report["combinations"] = detect_combinations(
+        session.lookback_df, session.bac_df, min_cooccurrence=3
+    )
+    return report

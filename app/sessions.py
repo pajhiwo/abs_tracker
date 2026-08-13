@@ -18,6 +18,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from app.results_cache import ResultCache
+
 SESSION_TTL = int(os.getenv("SESSION_TTL", "1800"))  # seconds
 # Capacity is a memory-derived backstop, NOT the normal reclamation path — that is
 # TTL expiry (see InMemoryStore). T004 measured one analysis at ~29 MiB peak and
@@ -57,10 +59,11 @@ class SessionData:
     content_hash: str | None = None
     # The job this session is currently waiting on, if any (data-model Session).
     active_job_id: str | None = None
-    # Cache of built result payloads keyed by params_signature (data-model
-    # ResultCache; formalised with LRU + report/pdf artifacts in US2). The executor
-    # writes stage-one then stage-two payloads here.
-    results: dict[str, Any] = field(default_factory=dict)
+    # Per-session LRU cache keyed by params_signature, holding the results payload,
+    # the report document and the rendered PDF (data-model ResultCache; FR-016–FR-020).
+    # The executor writes the stage-one payload + report, then updates the ML block in
+    # stage two. Cleared on a new upload via `note_content` (FR-019).
+    results: ResultCache = field(default_factory=ResultCache)
 
 
 class SessionStore(Protocol):

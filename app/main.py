@@ -17,7 +17,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from core import parse_log
-from ai import generate_report, predict_risk, detect_combinations
+from ai import predict_risk
 from app import sessions
 from app.sessions import (
     SessionData,
@@ -27,7 +27,6 @@ from app.sessions import (
 )
 from app.compute import (
     DEFAULT_EXCLUDE_PROTEINS,
-    build_result_payload,
     params_signature,
 )
 from app.jobs import JobState, create_job_queue
@@ -267,7 +266,8 @@ async def upload_file(
     session.min_obs = min_obs
     session.split_compounds = split_compounds
     session.exclude_proteins = exclude_proteins
-    session.results = {}  # fresh upload → new content, drop any prior cache
+    # Fresh content invalidates the whole result cache (FR-019).
+    session.results.note_content(content_hash)
     sig = _session_signature(session)
     return await _enqueue_and_accept(response, sid, session, sig)
 
@@ -282,7 +282,7 @@ async def get_results(
     session = store.get(session_id)
     if session is None or session.bac_df is None:
         raise HTTPException(404, "No data loaded — upload a file first")
-    cached = session.results.get(_session_signature(session))
+    cached = session.results.get_payload(_session_signature(session))
     if cached is None:
         raise HTTPException(404, "No results yet — the analysis is still running")
     return cached
@@ -318,7 +318,7 @@ async def recompute(
     session.episode_threshold = params.episode_threshold
     sig = _session_signature(session)
 
-    cached = session.results.get(sig)
+    cached = session.results.get_payload(sig)
     if cached is not None:
         store.set(session_id, session)  # persist the (possibly changed) params
         return cached
@@ -376,27 +376,37 @@ class PredictRequest(BaseModel):
     ingredients: list[str]
 
 
+def _report_pending_body(response: Response, session: SessionData) -> dict:
+    """`202` body for a report requested before stage one has cached it.
+
+    The report is cached the moment stage one runs, so this is only hit while an
+    analysis is still queued/running (contracts: "`202` only while no analysis exists
+    yet"). Carries the active job id so the client can poll it.
+    """
+    response.status_code = 202
+    return {
+        "status": "pending",
+        "job_id": session.active_job_id,
+        "poll_after_seconds": executor.poll_after_seconds,
+    }
+
+
 @app.get("/report")
 async def get_report(response: Response, session_id: str | None = Cookie(default=None)):
-    """Generate a template-based analysis report."""
+    """Serve the cached analysis report (200), or 202 while it is still being computed.
+
+    The report is built and cached during stage one (research R1), so this never
+    triggers analysis or training — it only reads the cache (FR-016, FR-017).
+    """
     if not session_id:
         raise HTTPException(404, "No data loaded — upload a file first")
     session = store.get(session_id)
     if session is None or session.bac_df is None:
         raise HTTPException(404, "No data loaded — upload a file first")
 
-    summary = build_result_payload(session, include_ml=False)["summary"]
-
-    report = generate_report(
-        session.scores_all,
-        session.scores_by_period or {},
-        session.bac_df,
-        session.med_periods or {},
-        summary,
-    )
-    report["combinations"] = detect_combinations(
-        session.lookback_df, session.bac_df, min_cooccurrence=3
-    )
+    report = session.results.get_report(_session_signature(session))
+    if report is None:
+        return _report_pending_body(response, session)
     return report
 
 
@@ -427,29 +437,34 @@ async def predict_meal(
 async def report_pdf(
     response: Response, session_id: str | None = Cookie(default=None)
 ):
-    """Generate and return a PDF analysis report."""
+    """Serve the cached PDF (200), rendering it once on first request, or 202.
+
+    The report and summary come from the stage-one cache; the PDF is rendered lazily
+    from them the first time it is asked for, then cached so re-downloads replay the
+    same bytes without recomputation (FR-016, FR-017).
+    """
     if not session_id:
         raise HTTPException(404, "No data loaded — upload a file first")
     session = store.get(session_id)
     if session is None or session.bac_df is None:
         raise HTTPException(404, "No data loaded — upload a file first")
 
-    summary = build_result_payload(session, include_ml=False)["summary"]
+    sig = _session_signature(session)
+    report_data = session.results.get_report(sig)
+    payload = session.results.get_payload(sig)
+    if report_data is None or payload is None:
+        return _report_pending_body(response, session)
 
-    report_data = generate_report(
-        session.scores_all,
-        session.scores_by_period or {},
-        session.bac_df,
-        session.med_periods or {},
-        summary,
-    )
-    report_data["combinations"] = detect_combinations(
-        session.lookback_df, session.bac_df, min_cooccurrence=3
-    )
+    pdf_bytes = session.results.get_pdf(sig)
+    if pdf_bytes is None:
+        pdf_bytes = bytes(
+            await run_in_threadpool(generate_pdf, report_data, payload["summary"])
+        )
+        session.results.set_pdf(sig, pdf_bytes)
+        store.set(session_id, session)  # persist the rendered PDF into the cache
 
-    pdf_bytes = generate_pdf(report_data, summary)
     return Response(
-        content=bytes(pdf_bytes),
+        content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": 'attachment; filename="abs_report.pdf"'},
     )
