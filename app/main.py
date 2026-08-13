@@ -7,6 +7,7 @@ Run with:  uvicorn app.main:app --reload
 import hashlib
 import re
 import tempfile
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -30,7 +31,7 @@ from app.compute import (
     params_signature,
 )
 from app.jobs import JobState, create_job_queue
-from app.executor import AnalysisExecutor
+from app.executor import AnalysisExecutor, size_class
 from report.pdf_export import generate_pdf
 
 store = create_store()
@@ -118,7 +119,7 @@ _STATE_MESSAGES = {
 }
 
 
-def _accepted_body(job, position: int | None) -> dict:
+def _accepted_body(job, position: int | None, size: str | None = None) -> dict:
     """The `202 Accepted` body (contracts "Job accepted")."""
     body = {
         "status": job.state.value,
@@ -127,8 +128,22 @@ def _accepted_body(job, position: int | None) -> dict:
     }
     if job.state == JobState.QUEUED and position is not None:
         body["position"] = position
-        body["estimated_wait_seconds"] = executor.estimate_wait_seconds(position)
+        body["estimated_wait_seconds"] = executor.estimate_wait_seconds(position, size)
     return body
+
+
+# The two 503 causes read differently (contracts "Other errors"; R10): a saturated
+# queue is worth waiting out; session saturation means the app is holding all it can.
+_QUEUE_FULL_MESSAGE = (
+    "Too many analyses are running right now. Please try again in a few minutes."
+)
+_SESSIONS_FULL_MESSAGE = (
+    "The application is holding as many people as it can right now. "
+    "Please try again in a few minutes."
+)
+# Presence is refreshed at most this often, so polling does not become a per-request
+# SQLite write at rung 2 (research R5b). Well under the grace window (minutes).
+_PRESENCE_DEBOUNCE_SECONDS = 20.0
 
 
 def _set_at_capacity(response: Response, message: str, retry_after: int = 180) -> dict:
@@ -196,18 +211,41 @@ async def _enqueue_and_accept(
 ) -> dict:
     """Enqueue a job for `sig`, start the pump, and return the 202 body.
 
+    - Duplicate `(session, signature)` returns the existing job untouched, so a
+      double-click never consumes two places and is never refused for capacity.
+    - A *different* signature supersedes the session's prior job: the earlier one is
+      cancelled and its place released, so results correspond to the latest settings
+      (data-model "Settings changed mid-analysis").
+    - A genuinely new submission is subject to the FR-010 caps and may be refused with
+      the queue-saturation `503`.
+
     Sets status on the injected `response` (not a new one) so a freshly-issued session
     cookie survives. Every queue call is offloaded off the event loop because `sqlite3`
-    blocks it — the exact defect this feature removes, applied to the queue (R5a; T015).
+    blocks it (R5a; T015).
     """
+    size = size_class(session)
+    prior_id = session.active_job_id
+    prior = (
+        await run_in_threadpool(queue.get, prior_id, sid) if prior_id else None
+    )
+    is_duplicate = (
+        prior is not None and not prior.is_terminal and prior.params_signature == sig
+    )
+
+    if not is_duplicate and not await run_in_threadpool(executor.can_accept, size):
+        return _set_at_capacity(response, _QUEUE_FULL_MESSAGE)
+
     job = await run_in_threadpool(queue.enqueue, sid, sig)
+    if prior is not None and not prior.is_terminal and prior.job_id != job.job_id:
+        # Supersede the earlier, now-outdated job and free its place (FR-009 mechanics).
+        await run_in_threadpool(queue.cancel, prior.job_id, sid)
     session.active_job_id = job.job_id
     store.set(sid, session)  # existing session → update, never raises capacity
     await run_in_threadpool(executor.pump)
     fresh = await run_in_threadpool(queue.get, job.job_id, sid)
     position = await run_in_threadpool(queue.position, job.job_id)
     response.status_code = 202
-    return _accepted_body(fresh or job, position)
+    return _accepted_body(fresh or job, position, size)
 
 
 @app.post("/upload")
@@ -232,11 +270,7 @@ async def upload_file(
     try:
         sid, session = _get_or_create_session(response, session_id)
     except SessionStoreAtCapacity:
-        return _set_at_capacity(
-            response,
-            "The application is holding as many people as it can right now. "
-            "Please try again in a few minutes.",
-        )
+        return _set_at_capacity(response, _SESSIONS_FULL_MESSAGE)
 
     contents = await file.read()
     content_hash = hashlib.sha256(contents).hexdigest()
@@ -339,8 +373,10 @@ async def job_status(job_id: str, session_id: str | None = Cookie(default=None))
     if job is None:
         # 404, never 403 — a 403 would confirm a foreign job exists (contracts).
         raise HTTPException(404, "Unknown job")
-    # Every successful poll updates last_seen_at — the presence mechanism (FR-013).
-    await run_in_threadpool(queue.touch, job_id, session_id)
+    # Presence (FR-013): refresh last_seen_at, but debounced so a busy poll loop does
+    # not become one SQLite write per request (research R5b). Most polls are pure reads.
+    if (time.time() - job.last_seen_at) >= _PRESENCE_DEBOUNCE_SECONDS:
+        await run_in_threadpool(queue.touch, job_id, session_id)
 
     body: dict = {
         "status": job.state.value,
@@ -350,8 +386,12 @@ async def job_status(job_id: str, session_id: str | None = Cookie(default=None))
     if job.state == JobState.QUEUED:
         position = await run_in_threadpool(queue.position, job_id)
         if position is not None:
+            session = store.get(session_id)
+            size = size_class(session) if session is not None else None
             body["position"] = position
-            body["estimated_wait_seconds"] = executor.estimate_wait_seconds(position)
+            body["estimated_wait_seconds"] = executor.estimate_wait_seconds(
+                position, size
+            )
     message = _STATE_MESSAGES.get(job.state)
     if message:
         body["message"] = message

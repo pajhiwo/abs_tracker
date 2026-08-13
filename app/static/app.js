@@ -52,8 +52,6 @@ fileInput.addEventListener("change", () => {
     if (fileInput.files[0]) uploadFile(fileInput.files[0]);
 });
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
 // Extract a human message from an error/response body that may be either the
 // job/at-capacity shape ({status, message}) or FastAPI's {detail}.
 function errorMessage(body, fallback) {
@@ -72,45 +70,128 @@ async function loadResults() {
     return false;
 }
 
-// Poll a job to completion, rendering as soon as stage one (partial) is cached.
-// The server drives the interval via poll_after_seconds so it can back clients off.
-async function pollJob(jobId) {
-    while (true) {
-        const r = await fetch(`/jobs/${jobId}`);
-        if (!r.ok) {
-            const body = await r.json().catch(() => null);
-            uploadStatus.textContent = `✗ ${errorMessage(body, "Lost track of the analysis")}`;
-            uploadStatus.className = "status error";
-            return;
-        }
-        const s = await r.json();
-        const wait = (s.poll_after_seconds || 2) * 1000;
+// -- Job polling (US3): scheduled, cancellable and visibility-aware ----------
+// A single job is tracked at a time. Polling is scheduled with setTimeout rather
+// than a busy loop so it can be cancelled, superseded, or woken immediately when the
+// tab becomes visible (mobile browsers throttle background timers — research R3).
+const cancelJobBtn = document.getElementById("cancel-job-btn");
+const restartJobBtn = document.getElementById("restart-job-btn");
 
-        if (s.status === "queued") {
-            const pos = s.position != null ? `position ${s.position}` : "queued";
-            const eta = s.estimated_wait_seconds != null ? `, ~${s.estimated_wait_seconds}s` : "";
-            uploadStatus.textContent = `Waiting in queue (${pos}${eta})…`;
-            uploadStatus.className = "status loading";
-        } else if (s.status === "running") {
-            uploadStatus.textContent = "Analysing your log…";
-            uploadStatus.className = "status loading";
-        } else if (s.status === "partial") {
-            await loadResults();  // deterministic results are ready; ML still running
-            uploadStatus.textContent = "Analysing (finishing the model)…";
-            uploadStatus.className = "status loading";
-        } else if (s.status === "complete") {
-            await loadResults();
-            uploadStatus.textContent = "✓ Analysis complete";
-            uploadStatus.className = "status success";
-            return;
-        } else {
-            // failed / abandoned / expired
-            uploadStatus.textContent = `✗ ${errorMessage(s, "Analysis stopped")}`;
-            uploadStatus.className = "status error";
-            return;
-        }
-        await sleep(wait);
+let currentJobId = null;
+let pollTimer = null;
+
+function _showQueueControls({ cancel = false, restart = false } = {}) {
+    if (cancelJobBtn) cancelJobBtn.style.display = cancel ? "inline-block" : "none";
+    if (restartJobBtn) restartJobBtn.style.display = restart ? "inline-block" : "none";
+}
+
+function stopPolling() {
+    currentJobId = null;
+    if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
     }
+    _showQueueControls({});
+}
+
+function startPolling(jobId) {
+    if (pollTimer) clearTimeout(pollTimer);
+    currentJobId = jobId;
+    pollOnce(jobId);
+}
+
+function _scheduleNextPoll(jobId, seconds) {
+    if (currentJobId !== jobId) return;  // cancelled or superseded
+    pollTimer = setTimeout(() => pollOnce(jobId), seconds * 1000);
+}
+
+async function pollOnce(jobId) {
+    if (currentJobId !== jobId) return;  // stale scheduled call
+    let r;
+    try {
+        r = await fetch(`/jobs/${jobId}`);
+    } catch {
+        _scheduleNextPoll(jobId, 2);  // transient network blip — try again
+        return;
+    }
+    if (currentJobId !== jobId) return;  // superseded while awaiting
+
+    if (!r.ok) {
+        const body = await r.json().catch(() => null);
+        uploadStatus.textContent = `✗ ${errorMessage(body, "Lost track of the analysis")}`;
+        uploadStatus.className = "status error";
+        stopPolling();
+        return;
+    }
+    const s = await r.json();
+    const wait = s.poll_after_seconds || 2;
+
+    if (s.status === "queued") {
+        const pos = s.position != null ? `position ${s.position}` : "queued";
+        const eta = s.estimated_wait_seconds != null ? `, ~${s.estimated_wait_seconds}s` : "";
+        uploadStatus.textContent = `Waiting in queue (${pos}${eta})…`;
+        uploadStatus.className = "status loading queued";
+        _showQueueControls({ cancel: true });
+        _scheduleNextPoll(jobId, wait);
+    } else if (s.status === "running") {
+        uploadStatus.textContent = "Analysing your log…";
+        uploadStatus.className = "status loading";
+        _showQueueControls({ cancel: true });
+        _scheduleNextPoll(jobId, wait);
+    } else if (s.status === "partial") {
+        await loadResults();  // deterministic results are ready; ML still running
+        uploadStatus.textContent = "Analysing (finishing the model)…";
+        uploadStatus.className = "status loading";
+        _showQueueControls({});
+        _scheduleNextPoll(jobId, wait);
+    } else if (s.status === "complete") {
+        await loadResults();
+        uploadStatus.textContent = "✓ Analysis complete";
+        uploadStatus.className = "status success";
+        stopPolling();
+    } else if (s.status === "abandoned") {
+        // Dropped at its turn because we looked away too long (FR-013/014).
+        uploadStatus.textContent = `⏸ ${errorMessage(s, "Your analysis was paused while you were away.")}`;
+        uploadStatus.className = "status error abandoned";
+        stopPolling();
+        _showQueueControls({ restart: true });
+    } else {
+        // failed / cancelled / expired
+        uploadStatus.textContent = `✗ ${errorMessage(s, "Analysis stopped")}`;
+        uploadStatus.className = "status error";
+        stopPolling();
+    }
+}
+
+// Poll immediately when the tab becomes visible again, so a returning phone reports
+// presence at once rather than waiting for the next timer tick (research R3; SC-013).
+document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && currentJobId) {
+        if (pollTimer) clearTimeout(pollTimer);
+        pollOnce(currentJobId);
+    }
+});
+
+if (cancelJobBtn) {
+    cancelJobBtn.addEventListener("click", async () => {
+        const id = currentJobId;
+        if (!id) return;
+        stopPolling();
+        uploadStatus.textContent = "Cancelling…";
+        uploadStatus.className = "status loading";
+        try {
+            await fetch(`/jobs/${id}`, { method: "DELETE" });
+        } catch { /* best effort — the place is released server-side either way */ }
+        uploadStatus.textContent = "Cancelled. Adjust settings and analyse again when ready.";
+        uploadStatus.className = "status";
+    });
+}
+
+if (restartJobBtn) {
+    restartJobBtn.addEventListener("click", () => {
+        _showQueueControls({});
+        runRecompute();  // frames are still on the session — no re-upload needed
+    });
 }
 
 async function uploadFile(file) {
@@ -140,7 +221,7 @@ async function uploadFile(file) {
         if (resp.status === 202) {
             const body = await resp.json();
             uploadStatus.textContent = "Analysis queued…";
-            await pollJob(body.job_id);
+            startPolling(body.job_id);
             return;
         }
         // 200 — a cached result was available immediately.
@@ -151,6 +232,50 @@ async function uploadFile(file) {
     } catch (e) {
         uploadStatus.textContent = `✗ ${e.message}`;
         uploadStatus.className = "status error";
+    }
+}
+
+// Recompute with the current control settings. Shared by the Recompute button and the
+// "restart" affordance shown after an abandoned job (FR-014). Returns nothing; drives
+// the status area and job polling itself.
+async function runRecompute() {
+    if (!currentData) return;
+    recomputeBtn.disabled = true;
+    recomputeBtn.textContent = "Computing…";
+    uploadStatus.textContent = "Submitting…";
+    uploadStatus.className = "status loading";
+    try {
+        const resp = await fetch("/results", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                hours: parseFloat(hoursSlider.value),
+                min_obs: parseInt(minobsSlider.value),
+                split_compounds: splitCompounds.checked,
+                exclude_proteins: excludeProteins.checked,
+                episode_threshold: parseFloat(thresholdSlider.value),
+            }),
+        });
+        if (!resp.ok && resp.status !== 202) {
+            const err = await resp.json().catch(() => null);
+            throw new Error(errorMessage(err, "Recompute failed"));
+        }
+        if (resp.status === 202) {
+            const body = await resp.json();
+            startPolling(body.job_id);
+        } else {
+            // 200 — unchanged settings served straight from cache.
+            currentData = await resp.json();
+            uploadStatus.textContent = "✓ Updated";
+            uploadStatus.className = "status success";
+            renderAll();
+        }
+    } catch (e) {
+        uploadStatus.textContent = `✗ ${e.message}`;
+        uploadStatus.className = "status error";
+    } finally {
+        recomputeBtn.disabled = false;
+        recomputeBtn.textContent = "Recompute";
     }
 }
 
@@ -170,41 +295,7 @@ thresholdSlider.addEventListener("input", () => {
 thresholdSlider.value = "2.0";
 thresholdValue.textContent = thresholdSlider.value;
 
-recomputeBtn.addEventListener("click", async () => {
-    if (!currentData) return;
-    recomputeBtn.disabled = true;
-    recomputeBtn.textContent = "Computing…";
-    try {
-        const resp = await fetch("/results", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                hours: parseFloat(hoursSlider.value),
-                min_obs: parseInt(minobsSlider.value),
-                split_compounds: splitCompounds.checked,
-                exclude_proteins: excludeProteins.checked,
-                episode_threshold: parseFloat(thresholdSlider.value),
-            }),
-        });
-        if (!resp.ok && resp.status !== 202) {
-            const err = await resp.json().catch(() => null);
-            throw new Error(errorMessage(err, "Recompute failed"));
-        }
-        if (resp.status === 202) {
-            const body = await resp.json();
-            await pollJob(body.job_id);
-        } else {
-            // 200 — unchanged settings served straight from cache.
-            currentData = await resp.json();
-            renderAll();
-        }
-    } catch (e) {
-        alert(e.message);
-    } finally {
-        recomputeBtn.disabled = false;
-        recomputeBtn.textContent = "Recompute";
-    }
-});
+recomputeBtn.addEventListener("click", () => runRecompute());
 
 periodSelect.addEventListener("change", renderLiftChart);
 showLowConf.addEventListener("change", renderLiftChart);
