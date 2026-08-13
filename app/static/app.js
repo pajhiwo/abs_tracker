@@ -52,6 +52,148 @@ fileInput.addEventListener("change", () => {
     if (fileInput.files[0]) uploadFile(fileInput.files[0]);
 });
 
+// Extract a human message from an error/response body that may be either the
+// job/at-capacity shape ({status, message}) or FastAPI's {detail}.
+function errorMessage(body, fallback) {
+    if (!body) return fallback;
+    return body.message || body.detail || fallback;
+}
+
+// Fetch and render the current results payload (used on partial/complete).
+async function loadResults() {
+    const rr = await fetch("/results");
+    if (rr.ok) {
+        currentData = await rr.json();
+        renderAll();
+        return true;
+    }
+    return false;
+}
+
+// -- Job polling (US3): scheduled, cancellable and visibility-aware ----------
+// A single job is tracked at a time. Polling is scheduled with setTimeout rather
+// than a busy loop so it can be cancelled, superseded, or woken immediately when the
+// tab becomes visible (mobile browsers throttle background timers — research R3).
+const cancelJobBtn = document.getElementById("cancel-job-btn");
+const restartJobBtn = document.getElementById("restart-job-btn");
+
+let currentJobId = null;
+let pollTimer = null;
+
+function _showQueueControls({ cancel = false, restart = false } = {}) {
+    if (cancelJobBtn) cancelJobBtn.style.display = cancel ? "inline-block" : "none";
+    if (restartJobBtn) restartJobBtn.style.display = restart ? "inline-block" : "none";
+}
+
+function stopPolling() {
+    currentJobId = null;
+    if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
+    }
+    _showQueueControls({});
+}
+
+function startPolling(jobId) {
+    if (pollTimer) clearTimeout(pollTimer);
+    currentJobId = jobId;
+    pollOnce(jobId);
+}
+
+function _scheduleNextPoll(jobId, seconds) {
+    if (currentJobId !== jobId) return;  // cancelled or superseded
+    pollTimer = setTimeout(() => pollOnce(jobId), seconds * 1000);
+}
+
+async function pollOnce(jobId) {
+    if (currentJobId !== jobId) return;  // stale scheduled call
+    let r;
+    try {
+        r = await fetch(`/jobs/${jobId}`);
+    } catch {
+        _scheduleNextPoll(jobId, 2);  // transient network blip — try again
+        return;
+    }
+    if (currentJobId !== jobId) return;  // superseded while awaiting
+
+    if (!r.ok) {
+        const body = await r.json().catch(() => null);
+        uploadStatus.textContent = `✗ ${errorMessage(body, "Lost track of the analysis")}`;
+        uploadStatus.className = "status error";
+        stopPolling();
+        return;
+    }
+    const s = await r.json();
+    const wait = s.poll_after_seconds || 2;
+
+    if (s.status === "queued") {
+        const pos = s.position != null ? `position ${s.position}` : "queued";
+        const eta = s.estimated_wait_seconds != null ? `, ~${s.estimated_wait_seconds}s` : "";
+        uploadStatus.textContent = `Waiting in queue (${pos}${eta})…`;
+        uploadStatus.className = "status loading queued";
+        _showQueueControls({ cancel: true });
+        _scheduleNextPoll(jobId, wait);
+    } else if (s.status === "running") {
+        uploadStatus.textContent = "Analysing your log…";
+        uploadStatus.className = "status loading";
+        _showQueueControls({ cancel: true });
+        _scheduleNextPoll(jobId, wait);
+    } else if (s.status === "partial") {
+        await loadResults();  // deterministic results are ready; ML still running
+        uploadStatus.textContent = "Analysing (finishing the model)…";
+        uploadStatus.className = "status loading";
+        _showQueueControls({});
+        _scheduleNextPoll(jobId, wait);
+    } else if (s.status === "complete") {
+        await loadResults();
+        uploadStatus.textContent = "✓ Analysis complete";
+        uploadStatus.className = "status success";
+        stopPolling();
+    } else if (s.status === "abandoned") {
+        // Dropped at its turn because we looked away too long (FR-013/014).
+        uploadStatus.textContent = `⏸ ${errorMessage(s, "Your analysis was paused while you were away.")}`;
+        uploadStatus.className = "status error abandoned";
+        stopPolling();
+        _showQueueControls({ restart: true });
+    } else {
+        // failed / cancelled / expired
+        uploadStatus.textContent = `✗ ${errorMessage(s, "Analysis stopped")}`;
+        uploadStatus.className = "status error";
+        stopPolling();
+    }
+}
+
+// Poll immediately when the tab becomes visible again, so a returning phone reports
+// presence at once rather than waiting for the next timer tick (research R3; SC-013).
+document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && currentJobId) {
+        if (pollTimer) clearTimeout(pollTimer);
+        pollOnce(currentJobId);
+    }
+});
+
+if (cancelJobBtn) {
+    cancelJobBtn.addEventListener("click", async () => {
+        const id = currentJobId;
+        if (!id) return;
+        stopPolling();
+        uploadStatus.textContent = "Cancelling…";
+        uploadStatus.className = "status loading";
+        try {
+            await fetch(`/jobs/${id}`, { method: "DELETE" });
+        } catch { /* best effort — the place is released server-side either way */ }
+        uploadStatus.textContent = "Cancelled. Adjust settings and analyse again when ready.";
+        uploadStatus.className = "status";
+    });
+}
+
+if (restartJobBtn) {
+    restartJobBtn.addEventListener("click", () => {
+        _showQueueControls({});
+        runRecompute();  // frames are still on the session — no re-upload needed
+    });
+}
+
 async function uploadFile(file) {
     uploadStatus.textContent = `Uploading ${file.name}…`;
     uploadStatus.className = "status loading";
@@ -69,19 +211,71 @@ async function uploadFile(file) {
             method: "POST",
             body: formData,
         });
-        if (!resp.ok) {
-            const err = await resp.json();
-            throw new Error(err.detail || "Upload failed");
+        if (!resp.ok && resp.status !== 202) {
+            const err = await resp.json().catch(() => null);
+            throw new Error(errorMessage(err, "Upload failed"));
         }
+        const exLink = document.getElementById("example-link");
+        if (exLink) exLink.style.display = "none";
+
+        if (resp.status === 202) {
+            const body = await resp.json();
+            uploadStatus.textContent = "Analysis queued…";
+            startPolling(body.job_id);
+            return;
+        }
+        // 200 — a cached result was available immediately.
         currentData = await resp.json();
         uploadStatus.textContent = `✓ Loaded ${file.name}`;
         uploadStatus.className = "status success";
-        const exLink = document.getElementById("example-link");
-        if (exLink) exLink.style.display = "none";
         renderAll();
     } catch (e) {
         uploadStatus.textContent = `✗ ${e.message}`;
         uploadStatus.className = "status error";
+    }
+}
+
+// Recompute with the current control settings. Shared by the Recompute button and the
+// "restart" affordance shown after an abandoned job (FR-014). Returns nothing; drives
+// the status area and job polling itself.
+async function runRecompute() {
+    if (!currentData) return;
+    recomputeBtn.disabled = true;
+    recomputeBtn.textContent = "Computing…";
+    uploadStatus.textContent = "Submitting…";
+    uploadStatus.className = "status loading";
+    try {
+        const resp = await fetch("/results", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                hours: parseFloat(hoursSlider.value),
+                min_obs: parseInt(minobsSlider.value),
+                split_compounds: splitCompounds.checked,
+                exclude_proteins: excludeProteins.checked,
+                episode_threshold: parseFloat(thresholdSlider.value),
+            }),
+        });
+        if (!resp.ok && resp.status !== 202) {
+            const err = await resp.json().catch(() => null);
+            throw new Error(errorMessage(err, "Recompute failed"));
+        }
+        if (resp.status === 202) {
+            const body = await resp.json();
+            startPolling(body.job_id);
+        } else {
+            // 200 — unchanged settings served straight from cache.
+            currentData = await resp.json();
+            uploadStatus.textContent = "✓ Updated";
+            uploadStatus.className = "status success";
+            renderAll();
+        }
+    } catch (e) {
+        uploadStatus.textContent = `✗ ${e.message}`;
+        uploadStatus.className = "status error";
+    } finally {
+        recomputeBtn.disabled = false;
+        recomputeBtn.textContent = "Recompute";
     }
 }
 
@@ -101,32 +295,7 @@ thresholdSlider.addEventListener("input", () => {
 thresholdSlider.value = "2.0";
 thresholdValue.textContent = thresholdSlider.value;
 
-recomputeBtn.addEventListener("click", async () => {
-    if (!currentData) return;
-    recomputeBtn.disabled = true;
-    recomputeBtn.textContent = "Computing…";
-    try {
-        const resp = await fetch("/results", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                hours: parseFloat(hoursSlider.value),
-                min_obs: parseInt(minobsSlider.value),
-                split_compounds: splitCompounds.checked,
-                exclude_proteins: excludeProteins.checked,
-                episode_threshold: parseFloat(thresholdSlider.value),
-            }),
-        });
-        if (!resp.ok) throw new Error("Recompute failed");
-        currentData = await resp.json();
-        renderAll();
-    } catch (e) {
-        alert(e.message);
-    } finally {
-        recomputeBtn.disabled = false;
-        recomputeBtn.textContent = "Recompute";
-    }
-});
+recomputeBtn.addEventListener("click", () => runRecompute());
 
 periodSelect.addEventListener("change", renderLiftChart);
 showLowConf.addEventListener("change", renderLiftChart);
@@ -974,28 +1143,31 @@ function renderMlModel() {
         // Intro caption above the chart — explains what to look at first.
         const topEffect = effects[0];
         const topName = prettyFeature(topEffect.feature);
-        const topDir = topEffect.coef > 0 ? "raises" : "lowers";
+        const topDir = topEffect.coef > 0 ? "higher" : "lower";
         chartDiv.insertAdjacentHTML("beforebegin", `
             <div class="ml-chart-intro">
-                <h3 class="ml-chart-title">What affects your BAC the most?</h3>
+                <h3 class="ml-chart-title">What was most associated with your BAC?</h3>
                 <p>
                     Each bar is one thing the model looked at (a food, medication,
                     or meal-timing feature). Bars to the <strong>right</strong> mean
-                    that thing <strong>raises</strong> your BAC; bars to the
-                    <strong>left</strong> mean it <strong>lowers</strong> it.
-                    The longer the bar, the bigger the effect.
+                    your BAC tended to be <strong>higher</strong> when that thing was
+                    logged nearby; bars to the <strong>left</strong> mean it tended to
+                    be <strong>lower</strong>. These are associations in your own log,
+                    not proof that the food caused the change.
+                    The longer the bar, the stronger the association.
                     The thin horizontal line on each bar shows how uncertain that
-                    estimate is — if the line crosses zero, the effect is not
+                    estimate is — if the line crosses zero, the association is not
                     reliable yet.
                 </p>
                 <div class="ml-legend">
-                    <span class="ml-legend-item"><span class="ml-swatch" style="background:#ef4444"></span>Raises BAC (reliable)</span>
-                    <span class="ml-legend-item"><span class="ml-swatch" style="background:#22c55e"></span>Lowers BAC (reliable)</span>
-                    <span class="ml-legend-item"><span class="ml-swatch" style="background:#8b8fa3"></span>Effect not yet reliable</span>
+                    <span class="ml-legend-item"><span class="ml-swatch" style="background:#ef4444"></span>Associated with higher BAC (reliable)</span>
+                    <span class="ml-legend-item"><span class="ml-swatch" style="background:#22c55e"></span>Associated with lower BAC (reliable)</span>
+                    <span class="ml-legend-item"><span class="ml-swatch" style="background:#8b8fa3"></span>Association not yet reliable</span>
                 </div>
                 <p class="ml-chart-example">
                     <strong>Example:</strong> the top bar is
-                    <em>${topName}</em>, which ${topDir} your BAC the most in this dataset.
+                    <em>${topName}</em>, alongside which your BAC was most often
+                    ${topDir} in this dataset.
                 </p>
             </div>`);
 
@@ -1020,7 +1192,7 @@ function renderMlModel() {
             margin: { l: 200, r: 30, t: 30, b: 60 },
             height: Math.max(260, effects.length * 32 + 100),
             xaxis: {
-                title: "← Lowers BAC          Effect on BAC (permille)          Raises BAC →",
+                title: "← Associated with lower BAC          Association with BAC (permille)          Associated with higher BAC →",
                 zeroline: true,
                 zerolinecolor: "#666",
                 zerolinewidth: 2,
@@ -1065,7 +1237,9 @@ function renderMlModel() {
                 <tbody>${rows}</tbody>
             </table>
             <p class="ml-footnote">
-                <strong>Positive</strong> values raise your BAC, <strong>negative</strong> values lower it.
+                <strong>Positive</strong> values mean your BAC tended to be higher when this
+                was logged nearby; <strong>negative</strong> values, lower. These are
+                associations, not established causes.
                 A trigger is marked reliable (✓) when the uncertainty range
                 does not cross zero. Lookback window: ${ml.lookback_hours}h.
                 ${timeOfDayUsed ? "The model also adjusted for <em>time of day</em> in the background (not shown — it can't be acted on)." : ""}
@@ -1239,6 +1413,10 @@ generateReportBtn.addEventListener("click", async () => {
     generateReportBtn.textContent = "Generating…";
     try {
         const resp = await fetch("/report");
+        if (resp.status === 202) {
+            // Stage one hasn't cached the report yet — the analysis is still running.
+            throw new Error("Your analysis is still running — try again in a moment.");
+        }
         if (!resp.ok) throw new Error("Report generation failed");
         const data = await resp.json();
         _renderReport(data);

@@ -3,10 +3,85 @@ Tests for core/analysis.py — lookback mapping and lift scores.
 """
 
 import datetime
+from collections import Counter
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
 from core.analysis import map_lookback, compute_lift_scores
+from core import parse_log
+
+
+def _naive_map_lookback(bac_df, meals_df, hours=3):
+    """The original nested-`iterrows` implementation, kept as the equivalence oracle.
+
+    T019 replaced this with a vectorised join. Principle V requires proving the fast
+    version produces the same result on real data before it is trusted, so the slow
+    version lives on here as the reference.
+    """
+    if meals_df.empty or bac_df.empty:
+        return pd.DataFrame()
+    window = datetime.timedelta(hours=hours)
+    records = []
+    for bac_idx, bac_row in bac_df.iterrows():
+        bac_dt = bac_row["bac_datetime"]
+        if pd.isnull(bac_dt):
+            continue
+        window_start = bac_dt - window
+        for _, meal_row in meals_df.iterrows():
+            meal_dt = meal_row["meal_datetime"]
+            if pd.notnull(meal_dt):
+                if window_start <= meal_dt <= bac_dt:
+                    hours_before = (bac_dt - meal_dt).total_seconds() / 3600
+                    records.append({
+                        "bac_idx": bac_idx, "bac_datetime": bac_dt,
+                        "promille": bac_row["promille"], "episode": bac_row["episode"],
+                        "active_medications": bac_row["active_medications"],
+                        "ingredient": meal_row["ingredient"],
+                        "quantity_g": meal_row["quantity_g"], "meal": meal_row["meal"],
+                        "meal_datetime": meal_dt, "hours_before": round(hours_before, 2),
+                        "approximate": False,
+                    })
+            else:
+                meal_date = meal_row["date"]
+                if pd.notnull(meal_date) and (
+                    pd.Timestamp(meal_date).date() >= window_start.date()
+                    and pd.Timestamp(meal_date).date() <= bac_dt.date()
+                ):
+                    records.append({
+                        "bac_idx": bac_idx, "bac_datetime": bac_dt,
+                        "promille": bac_row["promille"], "episode": bac_row["episode"],
+                        "active_medications": bac_row["active_medications"],
+                        "ingredient": meal_row["ingredient"],
+                        "quantity_g": meal_row["quantity_g"], "meal": meal_row["meal"],
+                        "meal_datetime": None, "hours_before": None, "approximate": True,
+                    })
+    return pd.DataFrame(records)
+
+
+def _canonical(df):
+    """Order-independent multiset of rows with normalised values for comparison."""
+    if df is None or df.empty:
+        return Counter()
+    rows = []
+    for _, r in df.iterrows():
+        mdt = r["meal_datetime"]
+        hb = r["hours_before"]
+        qty = r["quantity_g"]
+        rows.append((
+            int(r["bac_idx"]),
+            str(r["ingredient"]),
+            str(r["meal"]),
+            bool(r["approximate"]),
+            None if pd.isna(hb) else round(float(hb), 2),
+            str(r["active_medications"]),
+            round(float(r["promille"]), 6),
+            bool(r["episode"]),
+            None if pd.isna(qty) else round(float(qty), 6),
+            None if pd.isna(mdt) else pd.Timestamp(mdt).isoformat(),
+        ))
+    return Counter(rows)
 
 
 def _make_bac_df(readings: list[dict]) -> pd.DataFrame:
@@ -109,6 +184,73 @@ class TestMapLookback:
         }])
         result = map_lookback(bac, meals, hours=3)
         assert result.iloc[0]["hours_before"] == 1.5
+
+
+# ---------------------------------------------------------------------------
+# Vectorised map_lookback == naive reference (T019, Principle V)
+# ---------------------------------------------------------------------------
+class TestVectorisedEquivalence:
+    def test_matches_reference_on_example_log(self):
+        example = Path(__file__).resolve().parents[1] / "example" / "example_log.xlsx"
+        if not example.exists():
+            pytest.skip("example workbook not present")
+        meals_df, bac_df, _ = parse_log(str(example))
+        for hours in (1, 3, 6, 24):
+            fast = map_lookback(bac_df, meals_df, hours=hours)
+            slow = _naive_map_lookback(bac_df, meals_df, hours=hours)
+            assert _canonical(fast) == _canonical(slow), f"mismatch at hours={hours}"
+
+    def test_matches_reference_on_synthetic_fixture(self):
+        from tests.fixtures.generate_year_log import generate
+
+        path = generate(months=2, out=Path("/tmp/analysis_equiv.xlsx"), seed=99)
+        meals_df, bac_df, _ = parse_log(str(path))
+        for hours in (2, 3):
+            fast = map_lookback(bac_df, meals_df, hours=hours)
+            slow = _naive_map_lookback(bac_df, meals_df, hours=hours)
+            assert _canonical(fast) == _canonical(slow)
+
+    def test_matches_reference_with_untimed_meals(self):
+        """Exercise the approximate date-level fallback path explicitly."""
+        bac = _make_bac_df([
+            {"date": "2025-04-02", "bac_datetime": "2025-04-02 09:00",
+             "promille": 1.2, "episode": False, "active_medications": "none"},
+            {"date": "2025-04-03", "bac_datetime": "2025-04-03 20:00",
+             "promille": 2.4, "episode": True, "active_medications": "DrugA"},
+        ])
+        meals = _make_meals_df([
+            # timed, within window of reading 1
+            {"date": "2025-04-02", "meal_datetime": "2025-04-02 07:30",
+             "ingredient": "Rice", "quantity_g": 200, "meal": "Breakfast"},
+            # untimed on the same day as reading 1
+            {"date": "2025-04-02", "meal_datetime": None,
+             "ingredient": "Bread", "quantity_g": 80, "meal": "Snack"},
+            # untimed on the day of reading 2
+            {"date": "2025-04-03", "meal_datetime": None,
+             "ingredient": "Pasta", "quantity_g": 150, "meal": "Dinner"},
+            # untimed well before either reading's window
+            {"date": "2025-03-01", "meal_datetime": None,
+             "ingredient": "OldFood", "quantity_g": 50, "meal": "Lunch"},
+        ])
+        fast = map_lookback(bac, meals, hours=3)
+        slow = _naive_map_lookback(bac, meals, hours=3)
+        assert _canonical(fast) == _canonical(slow)
+        # Sanity: OldFood must not appear (out of every window).
+        assert "OldFood" not in set(fast["ingredient"])
+
+    def test_vectorised_is_fast_at_scale(self):
+        """The whole point: 12-month lookback finishes quickly, not in minutes."""
+        import time
+        from tests.fixtures.generate_year_log import generate
+
+        path = generate(months=12, out=Path("/tmp/analysis_perf.xlsx"), seed=5)
+        meals_df, bac_df, _ = parse_log(str(path))
+        start = time.perf_counter()
+        result = map_lookback(bac_df, meals_df, hours=3)
+        elapsed = time.perf_counter() - start
+        assert not result.empty
+        # Un-vectorised this was ~436s (T004); a generous ceiling still proves the point.
+        assert elapsed < 15.0, f"map_lookback too slow: {elapsed:.1f}s"
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,22 @@ Analysis functions — look-back mapping and lift-score computation.
 
 import datetime
 
+import numpy as np
 import pandas as pd
+
+_LOOKBACK_COLUMNS = [
+    "bac_idx",
+    "bac_datetime",
+    "promille",
+    "episode",
+    "active_medications",
+    "ingredient",
+    "quantity_g",
+    "meal",
+    "meal_datetime",
+    "hours_before",
+    "approximate",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -19,64 +34,121 @@ def map_lookback(
     For each BAC reading, collect ingredients whose meal_datetime falls within
     [bac_datetime - hours, bac_datetime].
     Falls back to date-level matching (approximate=True) when meal_datetime is null.
+
+    Vectorised (research R8a): the original was a nested `iterrows` — O(readings ×
+    meals) in interpreted Python — which measured 436 seconds at twelve months (T004)
+    and was the single request that froze the site. This version sorts meals once and
+    uses `searchsorted` to slice the window per reading, so the cost is
+    O(readings·log(meals) + matches). Equivalence against the un-vectorised output is
+    pinned in `tests/test_analysis.py` (Principle V), since this shapes every
+    downstream number.
     """
     if meals_df.empty or bac_df.empty:
         return pd.DataFrame()
 
     window = datetime.timedelta(hours=hours)
-    records = []
 
-    for bac_idx, bac_row in bac_df.iterrows():
-        bac_dt = bac_row["bac_datetime"]
-        if pd.isnull(bac_dt):
-            continue
-        window_start = bac_dt - window
+    # Only readings with a real timestamp participate (matches the original `continue`).
+    bac = bac_df[bac_df["bac_datetime"].notnull()]
+    if bac.empty:
+        return pd.DataFrame()
 
-        for _, meal_row in meals_df.iterrows():
-            meal_dt = meal_row["meal_datetime"]
+    bac_idx = bac.index.to_numpy()
+    bac_dt = bac["bac_datetime"].to_numpy()  # datetime64[ns]
+    bac_promille = bac["promille"].to_numpy()
+    bac_episode = bac["episode"].to_numpy()
+    bac_meds = bac["active_medications"].to_numpy()
+    window_ns = np.timedelta64(int(window.total_seconds() * 1_000_000_000), "ns")
 
-            if pd.notnull(meal_dt):
-                if window_start <= meal_dt <= bac_dt:
-                    hours_before = (bac_dt - meal_dt).total_seconds() / 3600
-                    records.append(
-                        {
-                            "bac_idx": bac_idx,
-                            "bac_datetime": bac_dt,
-                            "promille": bac_row["promille"],
-                            "episode": bac_row["episode"],
-                            "active_medications": bac_row["active_medications"],
-                            "ingredient": meal_row["ingredient"],
-                            "quantity_g": meal_row["quantity_g"],
-                            "meal": meal_row["meal"],
-                            "meal_datetime": meal_dt,
-                            "hours_before": round(hours_before, 2),
-                            "approximate": False,
-                        }
-                    )
-            else:
-                meal_date = meal_row["date"]
-                if pd.notnull(meal_date):
-                    if (
-                        pd.Timestamp(meal_date).date() >= window_start.date()
-                        and pd.Timestamp(meal_date).date() <= bac_dt.date()
-                    ):
-                        records.append(
-                            {
-                                "bac_idx": bac_idx,
-                                "bac_datetime": bac_dt,
-                                "promille": bac_row["promille"],
-                                "episode": bac_row["episode"],
-                                "active_medications": bac_row["active_medications"],
-                                "ingredient": meal_row["ingredient"],
-                                "quantity_g": meal_row["quantity_g"],
-                                "meal": meal_row["meal"],
-                                "meal_datetime": None,
-                                "hours_before": None,
-                                "approximate": True,
-                            }
-                        )
+    has_dt = meals_df["meal_datetime"].notnull()
+    timed = meals_df[has_dt]
+    untimed = meals_df[~has_dt]
 
-    return pd.DataFrame(records)
+    chunks: list[pd.DataFrame] = []
+
+    # --- timed meals: exact window join via searchsorted on sorted meal_datetime ----
+    if not timed.empty:
+        timed = timed.sort_values("meal_datetime", kind="stable")
+        md = timed["meal_datetime"].to_numpy()  # sorted datetime64[ns]
+        m_ingredient = timed["ingredient"].to_numpy()
+        m_qty = timed["quantity_g"].to_numpy()
+        m_meal = timed["meal"].to_numpy()
+
+        window_start = bac_dt - window_ns
+        lo = np.searchsorted(md, window_start, side="left")
+        hi = np.searchsorted(md, bac_dt, side="right")
+
+        for i in range(len(bac_idx)):
+            a, b = lo[i], hi[i]
+            if b <= a:
+                continue
+            sl = slice(a, b)
+            n = b - a
+            meal_dts = md[sl]
+            hours_before = np.round(
+                (bac_dt[i] - meal_dts) / np.timedelta64(1, "s") / 3600.0, 2
+            )
+            chunks.append(
+                pd.DataFrame(
+                    {
+                        "bac_idx": np.repeat(bac_idx[i], n),
+                        "bac_datetime": np.repeat(bac_dt[i], n),
+                        "promille": np.repeat(bac_promille[i], n),
+                        "episode": np.repeat(bac_episode[i], n),
+                        "active_medications": np.repeat(bac_meds[i], n),
+                        "ingredient": m_ingredient[sl],
+                        "quantity_g": m_qty[sl],
+                        "meal": m_meal[sl],
+                        "meal_datetime": meal_dts,
+                        "hours_before": hours_before,
+                        "approximate": np.repeat(False, n),
+                    }
+                )
+            )
+
+    # --- untimed meals: date-level fallback via searchsorted on sorted date ---------
+    if not untimed.empty and untimed["date"].notnull().any():
+        untimed = untimed[untimed["date"].notnull()].sort_values("date", kind="stable")
+        # Compare on calendar date: normalise both sides to midnight.
+        ud = untimed["date"].to_numpy().astype("datetime64[D]").astype("datetime64[ns]")
+        u_ingredient = untimed["ingredient"].to_numpy()
+        u_qty = untimed["quantity_g"].to_numpy()
+        u_meal = untimed["meal"].to_numpy()
+
+        win_start_day = (bac_dt - window_ns).astype("datetime64[D]").astype("datetime64[ns]")
+        bac_day = bac_dt.astype("datetime64[D]").astype("datetime64[ns]")
+        lo = np.searchsorted(ud, win_start_day, side="left")
+        hi = np.searchsorted(ud, bac_day, side="right")
+
+        for i in range(len(bac_idx)):
+            a, b = lo[i], hi[i]
+            if b <= a:
+                continue
+            sl = slice(a, b)
+            n = b - a
+            chunks.append(
+                pd.DataFrame(
+                    {
+                        "bac_idx": np.repeat(bac_idx[i], n),
+                        "bac_datetime": np.repeat(bac_dt[i], n),
+                        "promille": np.repeat(bac_promille[i], n),
+                        "episode": np.repeat(bac_episode[i], n),
+                        "active_medications": np.repeat(bac_meds[i], n),
+                        "ingredient": u_ingredient[sl],
+                        "quantity_g": u_qty[sl],
+                        "meal": u_meal[sl],
+                        "meal_datetime": np.repeat(np.datetime64("NaT", "ns"), n),
+                        "hours_before": np.repeat(np.nan, n),
+                        "approximate": np.repeat(True, n),
+                    }
+                )
+            )
+
+    if not chunks:
+        return pd.DataFrame()
+
+    result = pd.concat(chunks, ignore_index=True)
+    return result[_LOOKBACK_COLUMNS]
 
 
 # ---------------------------------------------------------------------------

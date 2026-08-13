@@ -10,7 +10,6 @@ Dependencies are managed with [uv](https://docs.astral.sh/uv/). Install it once
 ```bash
 cd abs_tracker
 uv sync                       # creates .venv, fetches Python 3.14 + dependencies
-uv sync --extra redis         # optional: adds the Redis session backend
 ```
 
 `uv sync` also installs the `dev` dependency group (pytest). Use
@@ -45,6 +44,42 @@ Stop: press `Ctrl+C` in the terminal, or from another terminal:
 ```bash
 pkill -f "uvicorn app.main:app"
 ```
+
+### How analysis runs (async)
+
+Analysis no longer blocks the request. Uploading (or changing a setting) **submits a
+job** and returns immediately with a job reference; the page then **polls** for progress
+and **fetches** the result when it is ready:
+
+1. `POST /upload` (or `POST /results`) parses the file and enqueues a job → `202 Accepted`
+   with a `job_id`, current `status`, queue `position` and an `estimated_wait_seconds`.
+2. The browser polls `GET /jobs/{job_id}` until the job is `complete` (or `failed` /
+   `abandoned` / `expired`). Polling is visibility-aware, so a backgrounded tab keeps its
+   place without spending capacity.
+3. `GET /results`, `GET /report` and `GET /report/pdf` return the cached result — a repeat
+   request with unchanged file and settings is served without recomputing.
+
+When the site is busy you keep your place in the queue and see your position; if the queue
+is saturated a submission is refused with `503` and a `Retry-After` rather than hanging.
+Everything is anonymous and session-scoped — no account, and your data is discarded when
+the session expires (the retention window is stated on the page).
+
+## Configuration
+
+All configuration is via environment variables; every one has a sensible default, so the
+app runs with none set.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SESSION_TTL` | `1800` (30 min) | Session lifetime in seconds; data is discarded on expiry. |
+| `MAX_SESSIONS` | `500` | Backstop on concurrent sessions; a live session is never evicted — new ones are refused with `503` at capacity. |
+| `ANALYSIS_MAX_CONCURRENT` | `min(CPU count, 4)` | How many analyses run at once (thread-pool width). |
+| `ANALYSIS_MAX_WAITING` | `50` | How many jobs may wait in the queue before new submissions are refused. |
+| `ANALYSIS_MAX_WAIT_SECONDS` | `300` | If a new arrival's estimated wait exceeds this, it is refused rather than queued. |
+| `ANALYSIS_ABANDON_GRACE` | `300` | How long after a waiter stops polling before its turn is dropped, freeing capacity. |
+| `ABS_MAX_UPLOAD_BYTES` | `10485760` (10 MB) | Upload size cap; larger files are refused with `413` before the body is buffered. |
+| `ABS_MAX_LOOKBACK_PAIRS` | `50000000` | Complexity ceiling (readings × meals); a within-size but too-large log is refused with `422` instead of occupying a worker. Admits well over a year of daily entries. |
+| `ABS_QUEUE_DB` | _(unset)_ | Unset uses an in-memory queue (single process). Set to a file path to use the SQLite-backed queue, which is safe across multiple worker processes. |
 
 ## How it works — data flow & correlation logic
 

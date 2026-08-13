@@ -18,12 +18,11 @@ dependencies = [
     "numpy>=2.0.0,<3.0.0",
 ]
 
-[project.optional-dependencies]
-redis = ["redis>=5.0.0,<6.0.0"]
-
 [dependency-groups]
 dev = [
     "pytest>=8.0.0,<9.0.0",
+    # Required by starlette.testclient / fastapi.testclient for HTTP-level tests.
+    "httpx2>=0.28.0",
 ]
 
 [tool.uv]

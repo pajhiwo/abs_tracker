@@ -27,6 +27,52 @@
                 <input type="file" id="file-input" accept=".xlsx,.xls" hidden>
             </div>
             <div id="upload-status" class="status"></div>
+            <div id="queue-controls" class="queue-controls">
+                <button id="cancel-job-btn" class="btn btn-secondary" style="display:none">Cancel</button>
+                <button id="restart-job-btn" class="btn" style="display:none">Restart analysis</button>
+            </div>
+
+            <p class="retention-summary">
+                <strong>Your health data:</strong> no account is needed. Your file is held on the
+                server for up to <strong><span class="retention-window">the configured session
+                    lifetime</span></strong> after your last action, is briefly written to a
+                temporary file while it is read, is never combined with anyone else's, and is not
+                sent to any other company.
+            </p>
+
+            <details class="retention-notice">
+                <summary>Read the full detail — including what we cannot promise</summary>
+                <ul>
+                    <li>You are not asked to register, and no name, email, or account is attached
+                        to your data. A random session reference is stored in a cookie so the
+                        server can recognise your browser while you work. That reference, and your
+                        IP address, are the only things that could distinguish you.</li>
+                    <li>Your file is held in the server's memory while you use the site and is
+                        discarded at most <strong><span class="retention-window">the configured
+                            session lifetime</span></strong> after your last interaction. It may
+                        be discarded sooner if the server is busy. There is no database, and
+                        nothing is kept once your session ends.</li>
+                    <li>While your file is being read it is written to a temporary file on the
+                        server and removed as soon as reading finishes. Larger uploads are also
+                        written to temporary storage by the web server before this application
+                        sees them. Removal means the file is unlinked and unreachable — we do not
+                        claim it is scrubbed from the physical disk, and if the server crashes
+                        mid-read a temporary copy can survive until it is cleaned up.</li>
+                    <li>Your data is never combined with, compared against, or used to improve
+                        results for anyone else. Every analysis is computed from your file alone.</li>
+                    <li>Nothing from your file is sent to any other company or service. No
+                        external AI or analytics service is used. Restarting the server clears all
+                        session data from memory.</li>
+                    <li>The charting library is loaded from a public CDN, so that provider can see
+                        your IP address and that you visited this page. None of your log data is
+                        sent to it.</li>
+                </ul>
+                <p class="retention-caveat">This is a research tool run on ordinary hosting, not
+                    certified medical software, and it is not a substitute for advice from your
+                    clinician. Anyone who can access the server while your session is live could in
+                    principle read what is in memory, so please treat it as you would any website
+                    you upload a document to.</p>
+            </details>
         </section>
 
         <!-- Controls -->

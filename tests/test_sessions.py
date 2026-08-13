@@ -5,7 +5,16 @@ Run with: python -m pytest tests/test_sessions.py -v
 """
 
 import time
-from app.sessions import InMemoryStore, SessionData, new_session_id
+
+import pandas as pd
+import pytest
+
+from app.sessions import (
+    InMemoryStore,
+    SessionData,
+    SessionStoreAtCapacity,
+    new_session_id,
+)
 
 
 def test_separate_sessions_are_isolated():
@@ -54,8 +63,8 @@ def test_session_ttl_expiry():
     assert store.get(sid) is None
 
 
-def test_session_capacity_eviction():
-    """Oldest session is evicted when at capacity."""
+def test_live_session_is_never_evicted_to_admit_a_new_one():
+    """At capacity, a NEW session is refused rather than evicting a live one (FR-021)."""
     store = InMemoryStore(ttl=60, max_sessions=3)
 
     sids = []
@@ -65,28 +74,78 @@ def test_session_capacity_eviction():
         s.filename = f"file{i}.xlsx"
         store.set(sid, s)
         sids.append(sid)
-        time.sleep(0.01)  # ensure distinct timestamps
 
-    # All 3 should exist
-    for sid in sids:
-        assert store.get(sid) is not None
+    # A fourth new session must be refused, not swallow an existing one.
+    with pytest.raises(SessionStoreAtCapacity):
+        store.set(new_session_id(), SessionData())
 
-    # Adding a 4th should evict the oldest (sids[0] — but get() touched it above)
-    # After the get() loop above, sids[0] was touched last in the loop first,
-    # so let's touch sids[1] and sids[2] to make sids[0] oldest
-    time.sleep(0.01)
-    store.get(sids[1])
-    time.sleep(0.01)
-    store.get(sids[2])
+    # Every pre-existing session is still intact — none was sacrificed.
+    for i, sid in enumerate(sids):
+        got = store.get(sid)
+        assert got is not None
+        assert got.filename == f"file{i}.xlsx"
 
-    # Now sids[0] has the oldest timestamp
-    new_sid = new_session_id()
-    store.set(new_sid, SessionData())
 
-    assert store.get(sids[0]) is None  # evicted
-    assert store.get(sids[1]) is not None
-    assert store.get(sids[2]) is not None
-    assert store.get(new_sid) is not None
+def test_existing_session_updates_even_at_capacity():
+    """Updating an already-present session never counts as a new admission."""
+    store = InMemoryStore(ttl=60, max_sessions=2)
+    a, b = new_session_id(), new_session_id()
+    store.set(a, SessionData())
+    store.set(b, SessionData())
+
+    updated = store.get(a)
+    updated.filename = "still-here.xlsx"
+    store.set(a, updated)  # must not raise
+    assert store.get(a).filename == "still-here.xlsx"
+
+
+def test_capacity_frees_up_after_expiry():
+    """Expiry — not eviction — is how capacity is reclaimed."""
+    store = InMemoryStore(ttl=1, max_sessions=1)
+    first = new_session_id()
+    store.set(first, SessionData())
+    with pytest.raises(SessionStoreAtCapacity):
+        store.set(new_session_id(), SessionData())
+    time.sleep(1.1)
+    # Once the first has expired, the slot is available again.
+    store.set(new_session_id(), SessionData())  # must not raise
+
+
+def test_get_returns_a_copy_not_the_live_object():
+    """Mutating a fetched session must not silently mutate stored state (R5 seam 1)."""
+    store = InMemoryStore(ttl=60, max_sessions=10)
+    sid = new_session_id()
+    store.set(sid, SessionData(filename="orig.xlsx"))
+
+    got = store.get(sid)
+    got.filename = "mutated-without-set.xlsx"
+
+    # Without an explicit set(), the store must be unchanged.
+    assert store.get(sid).filename == "orig.xlsx"
+
+
+def test_set_stores_a_copy_so_later_caller_mutation_does_not_leak():
+    """The store must snapshot on set(), not alias the caller's object."""
+    store = InMemoryStore(ttl=60, max_sessions=10)
+    sid = new_session_id()
+    data = SessionData(filename="orig.xlsx")
+    store.set(sid, data)
+
+    data.filename = "changed-after-set.xlsx"
+    assert store.get(sid).filename == "orig.xlsx"
+
+
+def test_copy_semantics_hold_for_dataframe_fields():
+    """DataFrame fields are copied too, so a fetched frame is not the stored frame."""
+    store = InMemoryStore(ttl=60, max_sessions=10)
+    sid = new_session_id()
+    df = pd.DataFrame({"promille": [1.0, 2.0]})
+    store.set(sid, SessionData(bac_df=df))
+
+    got = store.get(sid)
+    got.bac_df.loc[0, "promille"] = 99.0
+
+    assert store.get(sid).bac_df.loc[0, "promille"] == 1.0
 
 
 def test_nonexistent_session_returns_none():

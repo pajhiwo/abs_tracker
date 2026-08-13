@@ -107,6 +107,51 @@ main {
     font-size: 0.9rem;
 }
 
+/* Retention disclosure (Principle IV: retention must be stated accurately).
+   The summary is always visible; only the elaboration is collapsible. */
+.retention-summary {
+    margin-top: 1rem;
+    font-size: 0.85rem;
+    line-height: 1.55;
+    color: var(--text-dim);
+}
+
+.retention-summary strong {
+    color: var(--text);
+}
+
+.retention-notice {
+    margin-top: 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.6rem 0.9rem;
+    font-size: 0.85rem;
+    color: var(--text-dim);
+}
+
+.retention-notice summary {
+    cursor: pointer;
+    color: var(--text);
+    font-weight: 600;
+}
+
+.retention-notice ul {
+    margin: 0.75rem 0 0 1.1rem;
+    padding: 0;
+}
+
+.retention-notice li {
+    margin-bottom: 0.5rem;
+    line-height: 1.5;
+}
+
+.retention-caveat {
+    margin-top: 0.5rem;
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--border);
+    line-height: 1.5;
+}
+
 .status.error {
     color: var(--danger);
 }
@@ -117,6 +162,27 @@ main {
 
 .status.loading {
     color: var(--warning);
+}
+
+/* Queue / presence states (US3) */
+.status.queued {
+    color: var(--warning);
+    font-weight: 600;
+}
+
+.status.abandoned {
+    color: var(--warning);
+}
+
+.queue-controls {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+}
+
+.queue-controls .btn {
+    padding: 0.35rem 0.9rem;
+    font-size: 0.85rem;
 }
 
 /* Controls */
