@@ -6,6 +6,28 @@ Runnable checks that prove the feature works end to end, each tied to the requir
 validates. Principle V requires claims of completion to be backed by observed output, so
 these are the commands whose output constitutes that evidence.
 
+## Validation run (T054) — 2026-08-13
+
+Evidence recorded after US1–US5 landed. The functional behaviour of Checks 2–7 is
+mechanised deterministically in the automated suite; the live HTTP path below was run
+against `uv run uvicorn app.main:app --port 8000` to prove the middleware, cookie and
+polling wiring under a real server (not just `TestClient`):
+
+| Check | Requirement | Observed (live, `example_log.xlsx`) |
+|-------|-------------|-------------------------------------|
+| Regression suite | Principle V | **212 passed, 1 skipped** (`uv run pytest`) |
+| 3 — no recompute on re-read | SC-003, FR-016/017 | `/results` 1.1 ms, `/report` 1.0 ms, `/report/pdf` 4.2 ms — all ≪ 2 s |
+| 3 — identical on repeat | FR-018 | two `/results` byte-identical after `jq -S` |
+| 3 — setting change recomputes | FR-019 | `hours: 5` → `202` job, then `complete` |
+| 5 — cross-session isolation | SC-007, FR-020 | session B reading A's `job_id` → **404** |
+| 6 — oversized upload | SC-011, FR-028/029 | 11 MB upload → **413 in 0.8 ms**, body names the 10 MB limit and `limit_bytes: 10485760`; the near-instant rejection proves it happens in middleware before buffering |
+| FR-024 — retention disclosure | Principle IV | `GET /` renders a concrete "30 minutes" window (from `SESSION_TTL`) |
+
+SC-006 (12-month log completes < 60 s while the site stays responsive) is proven by
+`tests/test_concurrency.py::test_year_scale_log_completes_and_keeps_the_site_responsive`.
+The rung-2-only items (load spike with `hey`, SQLite write-contention with `ABS_QUEUE_DB`)
+are out of scope at rung 1 and left for when file-backed/multi-worker deployment is taken up.
+
 ## Prerequisites
 
 ```bash
@@ -107,9 +129,10 @@ curl -s -b /tmp/c.txt -X POST -H 'Content-Type: application/json' \
 **Expected**: the three reads are fast and `diff` reports no difference; the settings change
 returns `202` with a job, or fresh results reflecting `hours: 5`.
 
-Note that `exclude_proteins: false` above matches `AnalysisParams` (`app/main.py` `AnalysisParams.exclude_proteins` default) but
-*not* the `/upload` default of `true` (`app/main.py` `upload_file`). Until that inconsistency is fixed,
-this request changes two settings rather than one and will recompute for the wrong reason.
+The default inconsistency an earlier draft warned about is now resolved: both `/upload`
+(`app/main.py` `upload_file`) and `AnalysisParams` (`app/main.py` `AnalysisParams.exclude_proteins`)
+default to the same `DEFAULT_EXCLUDE_PROTEINS`. So `exclude_proteins: false` above is a genuine
+single-setting change from that default and recomputes for the right reason (FR-019).
 
 ## Check 4 — Queue behaviour under saturation (US3, FR-005..FR-014, SC-001/SC-005)
 
@@ -244,9 +267,14 @@ Second, whether memory grows linearly with live sessions in a way that sets the 
 uv run pytest
 ```
 
-**Expected**: the 120 currently-passing tests (121 collected, one skipped) plus the new suites. The parser tests deserve
-attention if R6 lands: moving compound splitting out of `parse_log` means
+**Expected**: 212 passed, 1 skipped (213 collected) — the original suite plus the US1–US5
+suites (`test_sessions`, `test_compute`, `test_jobs`, `test_analysis`, `test_concurrency`,
+`test_results_cache`, `test_queue_limits`, `test_presence`, `test_privacy_isolation`,
+`test_limits`, `test_fixtures`, `test_retention_disclosure`). The one skip is the private
+legacy-format parser fixture, absent from this checkout.
+
+The R6 parser move (T045–T047) was **deferred**, so the compound-split tests remain in
+`tests/test_parser.py` for now; if that refactor is later taken up,
 `test_compound_dish_is_split` and `test_compound_dish_kept_whole_when_splitting_disabled`
-in `tests/test_parser.py` move to `tests/test_compounds.py` and must assert the transform
-reproduces the old behaviour exactly against `example/example_log.xlsx` — including the
-asymmetric casing and last-segment suffix quirks in R6.
+move to `tests/test_compounds.py` and must reproduce the asymmetric-casing and
+last-segment-suffix quirks exactly against `example/example_log.xlsx` (R6).
